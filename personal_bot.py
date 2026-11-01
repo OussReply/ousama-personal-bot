@@ -3,51 +3,57 @@ import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from google import genai
+from google.genai import types
 
-# إعداد التسجيل لمتابعة الأخطاء
+# Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# جلب المفاتيح بأمان من بيئة العمل على Render
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Environment variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# تهيئة عميل Gemini
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+# Initialize Gemini Client
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Corporate System Instruction
+SYSTEM_INSTRUCTION = """
+أنت ممثل خدمة العملاء الرسمي للمهندس أسامة. 
+- أسلوبك مؤسسي، احترافي، ومهذب جداً.
+- يجب أن تجيب بنفس اللغة التي يكتب بها المستخدم (عربية، فرنسية، إنجليزية... إلخ).
+- يمنع منعاً باتاً مناقشة الأسعار، تقديم الخصومات، أو الاتفاق على أي مبالغ مالية تلقائياً.
+- إذا استفسر المستخدم عن السعر أو الخصم أو تفاصيل مالية، لخص طلبه بأدب وأخبره بأن "المهندس أسامة" سيتواصل معه شخصياً لتزويده بالعرض المالي المناسب.
+"""
+
+# Models to attempt in order of preference
+MODELS_TO_TRY = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
+    user_text = update.message.text
+    reply_text = None
     
-    # توجيهات نظامية مؤسسية صارمة مع حظر التسعير والخصومات
-    system_instruction = (
-        "أنت نظام الرد الآلي الذكي والممثل الرسمي لخدمة العملاء الخاصة بالمهندس أسامة وخدمات الأنظمة الصناعية والبرمجية. "
-        "مهمتك استقبال استفسارات العملاء والشركات والرد عليها بلغة العميل تلقائياً وبأقصى درجات الاحترافية المؤسسية. "
-        "يجب أن تتضمن إجابتك العناصر التالية: "
-        "1. ترحيب رسمي ومهني باسم الخدمة/المؤسسة. "
-        "2. تأكيد استلام الطلب وتلخيص سريع لفهم المشكلة أو الاستفسار بناءً على رسالة العميل. "
-        "3. إفادة العميل بأن طلبه تم جدولته وسيقوم فريق العمل أو المهندس أسامة بمراجعته والرد عليه خلال ساعات العمل الرسمية. "
-        "تنبيه صارم هام جداً: يُمنع عليك منعاً باتاً ذكر أي أسعار، أو تخمين تكاليف، أو عرض أي خصومات أو عروض مالية من رأسك مطلقاً. "
-        "في حال يسأل العميل عن الأسعار أو الخصومات، أخبره بلباقة أن تحديد التكلفة والأسعار يتم حصرياً ودقيقاً بواسطة المهندس أسامة بعد مراجعة تفاصيل الطلب."
-    )
-    
-    try:
-        # إرسال الرسالة إلى نموذج Gemini مع التعليمات الجديدة
-        response = gemini_client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=f"{system_instruction}\n\nرسالة العميل الواردة: {user_message}",
-        )
-        reply_text = response.text
-    except Exception as e:
-        reply_text = "عذراً، استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا. سيتواصل معك المهندس أسامة قريباً."
-        logging.error(f"Gemini Error: {e}")
+    for model_name in MODELS_TO_TRY:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=user_text,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.3
+                )
+            )
+            reply_text = response.text
+            break # Success, exit loop
+        except Exception as e:
+            logging.warning(f"Failed with model {model_name}: {e}")
+            continue
 
-    # إرسال الرد للعميل عبر تيليجرام
+    if not reply_text:
+        reply_text = "عذراً، استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا. سيتواصل معك المهندس أسامة قريباً."
+
     await update.message.reply_text(reply_text)
 
 if __name__ == '__main__':
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
-    # استقبال الرسائل النصية وتوجيهها لدالة المعالجة
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("Enterprise Bot with Strict Pricing Rules is running...")
-    application.run_polling()
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print("Enterprise Bot with Auto-Fallback Strategy is running...")
+    app.run_polling()
