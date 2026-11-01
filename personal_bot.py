@@ -25,7 +25,7 @@ SYSTEM_INSTRUCTION = """
 """
 
 # Models to attempt in order of preference
-MODELS_TO_TRY = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']
+MODELS_TO_TRY = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-3.8-flash']
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
