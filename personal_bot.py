@@ -1,5 +1,7 @@
 import os
 import logging
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from google import genai
@@ -24,7 +26,6 @@ SYSTEM_INSTRUCTION = """
 - إذا استفسر المستخدم عن السعر أو الخصم أو تفاصيل مالية، لخص طلبه بأدب وأخبره بأن "المهندس أسامة" سيتواصل معه شخصياً لتزويده بالعرض المالي المناسب.
 """
 
-# Models to attempt in order of preference
 MODELS_TO_TRY = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-3.8-flash']
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -42,7 +43,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             )
             reply_text = response.text
-            break # Success, exit loop
+            break
         except Exception as e:
             logging.warning(f"Failed with model {model_name}: {e}")
             continue
@@ -52,8 +53,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply_text)
 
+# Dummy Web Server to satisfy Render's Port requirement for Web Services
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_web_server():
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
 if __name__ == '__main__':
+    # Start the dummy web server in a background thread
+    t = threading.Thread(target=run_web_server, daemon=True)
+    t.start()
+
+    # Start Telegram Bot
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Enterprise Bot with Auto-Fallback Strategy is running...")
+    print("Enterprise Bot with Web Server & Fallback Strategy is running...")
     app.run_polling()
