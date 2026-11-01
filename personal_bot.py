@@ -26,7 +26,8 @@ SYSTEM_INSTRUCTION = """
 - إذا استفسر المستخدم عن السعر أو الخصم أو تفاصيل مالية، لخص طلبه بأدب وأخبره بأن "المهندس أسامة" سيتواصل معه شخصياً لتزويده بالعرض المالي المناسب.
 """
 
-MODELS_TO_TRY = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-3.8-flash']
+# Correct stable model for google-genai SDK
+MODELS_TO_TRY = ['gemini-2.5-flash', 'gemini-2.0-flash']
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -73,5 +74,5 @@ if __name__ == '__main__':
     # Start Telegram Bot
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Enterprise Bot with Web Server & Fallback Strategy is running...")
+    print("Enterprise Bot with Web Server & Stable Model is running...")
     app.run_polling()
