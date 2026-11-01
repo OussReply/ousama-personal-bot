@@ -26,8 +26,7 @@ SYSTEM_INSTRUCTION = """
 - إذا استفسر المستخدم عن السعر أو الخصم أو تفاصيل مالية، لخص طلبه بأدب وأخبره بأن "المهندس أسامة" سيتواصل معه شخصياً لتزويده بالعرض المالي المناسب.
 """
 
-# Correct stable model for google-genai SDK
-MODELS_TO_TRY = ['gemini-3.8-flash', 'gemini-2.5-flash']
+MODELS_TO_TRY = ['gemini-2.5-flash', 'gemini-3.8-flash']
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -54,12 +53,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply_text)
 
-# Dummy Web Server to satisfy Render's Port requirement for Web Services
+# Dummy Web Server to satisfy Render's Port requirement
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
 
 def run_web_server():
     port = int(os.getenv("PORT", 10000))
@@ -71,8 +73,8 @@ if __name__ == '__main__':
     t = threading.Thread(target=run_web_server, daemon=True)
     t.start()
 
-    # Start Telegram Bot
+    # Start Telegram Bot with drop_pending_updates to clear old 409 conflicts
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Enterprise Bot with Web Server & Stable Model is running...")
-    app.run_polling()
+    print("Enterprise Bot with Web Server & Drop Pending Updates is running...")
+    app.run_polling(drop_pending_updates=True)
