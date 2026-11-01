@@ -32,7 +32,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # إرسال الرسالة إلى نموذج Gemini مع التعليمات الجديدة
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.8-flash',
             contents=f"{system_instruction}\n\nرسالة العميل الواردة: {user_message}",
         )
         reply_text = response.text
