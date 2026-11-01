@@ -27,7 +27,7 @@ SYSTEM_INSTRUCTION = """
 """
 
 # Correct stable model for google-genai SDK
-MODELS_TO_TRY = ['gemini-2.5-flash', 'gemini-2.0-flash']
+MODELS_TO_TRY = ['gemini-3.8-flash', 'gemini-2.5-flash']
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
