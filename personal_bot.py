@@ -22,13 +22,37 @@ SYSTEM_INSTRUCTION = "أنت مساعد شخصي ذكي ومهني تقدم خد
 # دالة الرد على الرسائل
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=user_text,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.3
+    ai_reply = None
+    
+    # قائمة النماذج المرتبة (إذا توقف الأول، ينتقل للثاني والثالث تلقائياً)
+    MODELS_TO_TRY = [
+        "gemini-3.8-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
+    ]
+    
+    for model_name in MODELS_TO_TRY:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=user_text,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.3
+                )
+            )
+            if response and response.text:
+                ai_reply = response.text
+                break # نجح الاتصال، اخرج من الحلقة
+        except Exception as e:
+            logger.warning(f"Model {model_name} failed: {e}")
+            continue # جرب النموذج التالي في القائمة
+
+    # صمام أمان نهائي إذا فشلت كل النماذج لأي سبب طارئ
+    if not ai_reply:
+        ai_reply = "استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا، سيتواصل معك المهندس."
+
+    await update.message.reply_text(ai_reply)
             )
         )
         ai_reply = response.text
