@@ -64,16 +64,20 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN is not set.")
         return
 
+    # تشغيل خادم الويب Flask في الخلفية باستخدام threading بشكل دقيق
+    import threading
+    def run_flask():
+        port = int(os.environ.get("PORT", 10000))
+        app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # بناء وتشغيل تطبيق تليجرام
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    import threading
-    def run_flask():
-        app_flask.run(host='0.0.0.0', port=10000)
-    
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    print("Enterprise Bot with Web Server is running...")
+    print("Enterprise Bot with Web Server is running and polling...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
