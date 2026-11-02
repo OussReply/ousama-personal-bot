@@ -19,12 +19,11 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = "أنت مساعد شخصي ذكي ومهني تقدم خدمة العملاء والدعم الفني."
 
-# دالة الرد على الرسائل
+# دالة الرد على الرسائل مع قائمة النماذج الاحتياطية الآمنة
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     ai_reply = None
     
-    # قائمة النماذج المرتبة (إذا توقف الأول، ينتقل للثاني والثالث تلقائياً)
     MODELS_TO_TRY = [
         "gemini-3.8-flash",
         "gemini-2.5-flash",
@@ -43,22 +42,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             if response and response.text:
                 ai_reply = response.text
-                break # نجح الاتصال، اخرج من الحلقة
+                break
         except Exception as e:
             logger.warning(f"Model {model_name} failed: {e}")
-            continue # جرب النموذج التالي في القائمة
+            continue
 
-    # صمام أمان نهائي إذا فشلت كل النماذج لأي سبب طارئ
     if not ai_reply:
-        ai_reply = "استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا، سيتواصل معك المهندس."
-
-    await update.message.reply_text(ai_reply)
-            )
-        )
-        ai_reply = response.text
-    except Exception as e:
-        logger.error(f"Error generating AI response: {e}")
-        # صمام الأمان: في حال أي خطأ يتم إرسال الرسالة الاحتياطية
         ai_reply = "استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا، سيتواصل معك المهندس."
 
     await update.message.reply_text(ai_reply)
@@ -75,11 +64,9 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN is not set.")
         return
 
-    # بناء تطبيق تليجرام
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    # تشغيل خادم الويب في الخلفية على المنفذ 10000 المطلوب في Render
     import threading
     def run_flask():
         app_flask.run(host='0.0.0.0', port=10000)
