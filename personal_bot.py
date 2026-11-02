@@ -30,7 +30,6 @@ MODEL_NAME = "gemini-2.0-flash"
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     reply_text = None
-    
     try:
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
