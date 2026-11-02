@@ -26,7 +26,7 @@ SYSTEM_INSTRUCTION = """
 - إذا استفسر المستخدم عن السعر أو الخصم أو تفاصيل مالية، لخص طلبه بأدب وأخبره بأن "المهندس أسامة" سيتواصل معه شخصياً لتزويده بالعرض المالي المناسب.
 """
 
-MODELS_TO_TRY = ['gemini-2.5-flash', 'gemini-3.8-flash']
+MODEL_NAME = "gemini-flash-latest"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
