@@ -1,83 +1,69 @@
 import os
 import logging
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from google import genai
 from google.genai import types
 
-# Logging setup
+# إعداد السجلات
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Environment variables
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# إعداد مفاتيح الاتصال
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Initialize Gemini Client
+# تهيئة عميل جوجل
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Corporate System Instruction
-SYSTEM_INSTRUCTION = """
-أنت ممثل خدمة العملاء الرسمي للمهندس أسامة. 
-- أسلوبك مؤسسي، احترافي، ومهذب جداً.
-- يجب أن تجيب بنفس اللغة التي يكتب بها المستخدم (عربية، فرنسية، إنجليزية... إلخ).
-- يمنع منعاً باتاً مناقشة الأسعار، تقديم الخصومات، أو الاتفاق على أي مبالغ مالية تلقائياً.
-- إذا استفسر المستخدم عن السعر أو الخصم أو تفاصيل مالية، لخص طلبه بأدب وأخبره بأن "المهندس أسامة" سيتواصل معه شخصياً لتزويده بالعرض المالي المناسب.
-"""
+SYSTEM_INSTRUCTION = "أنت مساعد شخصي ذكي ومهني تقدم خدمة العملاء والدعم الفني."
 
-MODEL_NAME = "gemini-2.0-flash"
+# دالة الرد على الرسائل
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    reply_text = None
     try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=user_text,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.3
-                )
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=user_text,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.3
             )
-            ai_reply = response.text
-        except Exception as e:
-            # صمام الأمان: في حال حدث أي خطأ يتم إرسال الرسالة الاحتياطية
-            ai_reply = "استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا، سيتواصل معك المهندس."
-                )
-            )
-            reply_text = response.text
-            break
-        except Exception as e:
-            logging.warning(f"Failed with model {model_name}: {e}")
-            continue
+        )
+        ai_reply = response.text
+    except Exception as e:
+        logger.error(f"Error generating AI response: {e}")
+        # صمام الأمان: في حال أي خطأ يتم إرسال الرسالة الاحتياطية
+        ai_reply = "استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا، سيتواصل معك المهندس."
 
-    if not reply_text:
-        reply_text = "عذراً، استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا. سيتواصل معك المهندس أسامة قريباً."
+    await update.message.reply_text(ai_reply)
 
-    await update.message.reply_text(reply_text)
+# إعداد خادم الويب المصغر لضمان استقرار Render و UptimeRobot
+app_flask = Flask(__name__)
 
-# Dummy Web Server to satisfy Render's Port requirement
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
-    def do_HEAD(self):
-        self.send_response(200)
-        self.end_headers()
+@app_flask.route('/')
+def home():
+    return "Bot is active and running 24/7!"
 
-def run_web_server():
-    port = int(os.getenv("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
+def main():
+    if not TELEGRAM_BOT_TOKEN:
+        print("Error: TELEGRAM_BOT_TOKEN is not set.")
+        return
+
+    # بناء تطبيق تليجرام
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
+    # تشغيل خادم الويب في الخلفية على المنفذ 10000 المطلوب في Render
+    import threading
+    def run_flask():
+        app_flask.run(host='0.0.0.0', port=10000)
+    
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    print("Enterprise Bot with Web Server is running...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
-    # Start the dummy web server in a background thread
-    t = threading.Thread(target=run_web_server, daemon=True)
-    t.start()
-
-    # Start Telegram Bot with drop_pending_updates to clear old 409 conflicts
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Enterprise Bot with Web Server & Drop Pending Updates is running...")
-    app.run_polling(drop_pending_updates=True)
+    main()
