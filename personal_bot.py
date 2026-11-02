@@ -31,14 +31,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     reply_text = None
     
-    for model_name in MODELS_TO_TRY:
-        try:
+    try:
             response = client.models.generate_content(
-                model=model_name,
+                model="gemini-2.0-flash",
                 contents=user_text,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.3
+                )
+            )
+            ai_reply = response.text
+        except Exception as e:
+            # صمام الأمان: في حال حدث أي خطأ يتم إرسال الرسالة الاحتياطية
+            ai_reply = "استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا، سيتواصل معك المهندس."
                 )
             )
             reply_text = response.text
