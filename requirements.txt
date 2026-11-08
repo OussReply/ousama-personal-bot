@@ -1,5 +1,4 @@
-python-telegram-bot
-python-dotenv
-google-genai
-httpx
-flask
+PyTelegramBotAPI==4.14.0
+Flask==3.0.2
+httpx==0.27.0
+python-dotenv==1.0.1
