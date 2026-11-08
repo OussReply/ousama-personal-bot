@@ -13,8 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 2. قراءة التوكن من بيئة Render
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     logger.error("خطأ: لم يتم العثور على TELEGRAM_TOKEN في متغيرات البيئة!")
     exit(1)
