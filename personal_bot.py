@@ -1,84 +1,129 @@
 import os
 import logging
+import threading
 from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from google import genai
-from google.genai import types
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# إعداد السجلات
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# 1. إعداد نظام السجلات (Logging) لمتابعة الأخطاء والأحداث بدقة
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# إعداد مفاتيح الاتصال
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# 2. قراءة المتغيرات السرية من بيئة المنصة (Render)
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+# يمكنك وضع معرفك الشخصي هنا أو كمتغير بيئة لحماية البوت
+OWNER_ID = os.environ.get("OWNER_ID") # اختياري: معرف تيليغرام الخاص بك
 
-# تهيئة عميل جوجل
-client = genai.Client(api_key=GEMINI_API_KEY)
+if not TOKEN:
+    logger.error("خطأ: لم يتم العثور على TELEGRAM_TOKEN في متغيرات البيئة!")
+    exit(1)
 
-SYSTEM_INSTRUCTION = "أنت مساعد شخصي ذكي ومهني تقدم خدمة العملاء والدعم الفني."
+bot = telebot.TeleBot(TOKEN)
 
-# دالة الرد على الرسائل مع قائمة النماذج الاحتياطية الآمنة
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    ai_reply = None
-    
-    MODELS_TO_TRY = [
-        "gemini-3.8-flash",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash"
-    ]
-    
-    for model_name in MODELS_TO_TRY:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=user_text,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.3
-                )
-            )
-            if response and response.text:
-                ai_reply = response.text
-                break
-        except Exception as e:
-            logger.warning(f"Model {model_name} failed: {e}")
-            continue
+# ==========================================
+3. إعداد خادم الويب المصغر (Flask) للخدمة المجانية على Render
+# ==========================================
+app = Flask(__name__)
 
-    if not ai_reply:
-        ai_reply = "استلمنا استفسارك وتم تسجيله في نظام الدعم الفني الخاص بنا، سيتواصل معك المهندس."
-
-    await update.message.reply_text(ai_reply)
-
-# إعداد خادم الويب المصغر لضمان استقرار Render و UptimeRobot
-app_flask = Flask(__name__)
-
-@app_flask.route('/')
+@app.route('/')
 def home():
-    return "Bot is active and running 24/7!"
+    return "Bot is active and running successfully!"
 
-def main():
-    if not TELEGRAM_BOT_TOKEN:
-        print("Error: TELEGRAM_BOT_TOKEN is not set.")
-        return
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
-    # تشغيل خادم الويب Flask في الخلفية باستخدام threading بشكل دقيق
-    import threading
-    def run_flask():
-        port = int(os.environ.get("PORT", 10000))
-        app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+# ==========================================
+4. تصميم الأزرار التفاعلية (Inline Keyboards)
+# ==========================================
+def get_main_menu():
+    markup = InlineKeyboardMarkup()
+    btn_ai = InlineKeyboardButton("🤖 نموذج الذكاء الاصطناعي", callback_data="btn_ai")
+    btn_help = InlineKeyboardButton("ℹ️ حول البوت", callback_data="btn_help")
+    markup.add(btn_ai, btn_help)
+    
+    btn_contact = InlineKeyboardButton("🌐 تواصل مع المطور (خمسات)", url="https://khamsat.com")
+    markup.add(btn_contact)
+    return markup
+
+
+# ==========================================
+5. أوامر البوت والتفاعل مع المستخدمين
+# ==========================================
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    try:
+        user_name = message.from_user.first_name
+        user_id = message.from_user.id
+        logger.info(f"مستخدم جديد بدأ المحادثة: ID={user_id}, Name={user_name}")
+
+        welcome_text = (
+            f"مرحباً بك يا *{user_name}* في النسخة التجريبية لبوت الخدمات الذكية! 🚀\n\n"
+            "هذا البوت مصمم بأحدث التقنيات ليكون نموذجاً احترافياً.\n"
+            "اختر أحد الخيارات من القائمة أدناه للتعرف على الميزات:"
+        )
+        
+        bot.send_message(
+            message.chat.id, 
+            welcome_text, 
+            parse_mode="Markdown", 
+            reply_markup=get_main_menu()
+        )
+    except Exception as e:
+        logger.error(f"حدث خطأ في أمر start: {e}")
+
+
+# 6. معالجة ضغطات الأزرار التفاعلية (Callback Query Handler)
+@bot.callback_query_handler(func=lambda call: True)
+def callback_inline(call):
+    try:
+        if call.data == "btn_ai":
+            bot.answer_callback_query(call.id, "جاري تحضير الخدمة...")
+            bot.send_message(
+                call.message.chat.id, 
+                "✨ هذه ميزة الذكاء الاصطناعي التجريبية. يمكنك ربط هذا القسم بأي نموذج لتقديم إجابات ذكية للعملاء!"
+            )
+        elif call.data == "btn_help":
+            bot.answer_callback_query(call.id)
+            bot.send_message(
+                call.message.chat.id, 
+                "ℹ️ *معلومات عن البوت:*\n"
+                "- مبني بلغة Python 3.12\n"
+                "- يعمل على خوادم سحابية بصفة دائمة\n"
+                "- مصمم بجودة عالية لخدمات الأتمتة وتطوير البوتات.",
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        logger.error(f"خطأ في معالجة الأزرار: {e}")
+
+
+# 7. الرد على الرسائل النصية العادية
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+    try:
+        text = message.text
+        bot.reply_to(
+            message, 
+            f"لقد استلمت رسالتك: '{text}'\nاستخدم أمر /start لعرض القائمة الرئيسية والأزرار التفاعلية."
+        )
+    except Exception as e:
+        logger.error(f"خطأ في معالجة الرسائل النصية: {e}")
+
+
+# ==========================================
+8. نقطة التشغيل الرئيسية (Main)
+# ==========================================
+if __name__ == "__main__":
+    # تشغيل خادم Flask في خيط منفصل (Background Thread) للحفاظ على نشاط البوت على Render
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
     flask_thread.start()
+    logger.info("تم بدء تشغيل خادم Flask بنجاح.")
 
-    # بناء وتشغيل تطبيق تليجرام
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-
-    print("Enterprise Bot with Web Server is running and polling...")
-    application.run_polling(drop_pending_updates=True)
-
-if __name__ == '__main__':
-    main()
+    # تشغيل بوت التيليغرام
+    logger.info("جاري بدء تشغيل بوت التيليغرام...")
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
