@@ -35,7 +35,7 @@ SYSTEM_PROMPT = """
 def call_ai_model(user_message):
     """الاتصال بموديل Claude لتوليد الرد بشخصية أسامة"""
     if not client:
-        return "أهلاً بك! مسافة الطريق وأرد عليك..."
+        return "أهلاً! مفتاح الـ API غير مضبوط جيداً."
 
     try:
         response = client.messages.create(
@@ -49,7 +49,7 @@ def call_ai_model(user_message):
         return response.content[0].text
     except Exception as e:
         print(f"Error calling Claude API: {e}")
-        return "أهلاً! استلمت رسالتك، أراجعها وأرد عليك."
+        return "أهلاً بك! استلمت رسالتك، أراجعها وأرد عليك."
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
