@@ -2,23 +2,26 @@ import os
 import telebot
 from flask import Flask
 import threading
+import anthropic
 
-# جلب التوكن حصرياً وآمناً من متغيرات البيئة (Environment Variables) دون كتابته في الكود
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# جلب التوكنات بأمان من متغيرات البيئة
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-if not TOKEN:
-    raise ValueError("خطأ حرج: لم يتم العثور على TELEGRAM_BOT_TOKEN في متغيرات البيئة الخاصة بـ Render!")
+if not TELEGRAM_TOKEN:
+    raise ValueError("خطأ: لم يتم العثور على TELEGRAM_BOT_TOKEN في متغيرات البيئة!")
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+client = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
 
-# إعداد خادم Flask البسيط للحفاظ على استمرار عمل البوت على Render (Keep-Alive)
+# إعداد خادم Flask للحفاظ على استمرار الخدمة 24/7
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "Bot is running 24/7!"
 
-# إعدادات الـ System Prompt (شخصية أسامة الرقمية - موجزة، مباشرة، ودون إفصاح عن الذكاء الاصطناعي)
+# شخصية المهندس أسامة (Digital Twin)
 SYSTEM_PROMPT = """
 أنت لست مساعداً ذكياً، ولست روبوت دردشة. أنت المهندس أسامة شخصياً (Digital Twin)، وترد على رسائل الأشخاص على تيليجرام بنفسك.
 
@@ -30,13 +33,23 @@ SYSTEM_PROMPT = """
 """
 
 def call_ai_model(user_message):
-    """دالة الاتصال بنموذج الذكاء الاصطناعي للحصول على الرد بالشخصية المحددة"""
+    """الاتصال بموديل Claude لتوليد الرد بشخصية أسامة"""
+    if not client:
+        return "أهلاً بك! مسافة الطريق وأرد عليك..."
+
     try:
-        # يمكنك ربط نموذج Anthropic Claude هنا لاحقاً
-        response_text = f"تم استلام رسالتك: {user_message}"
-        return response_text
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=300,
+            system=SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": user_message}
+            ]
+        )
+        return response.content[0].text
     except Exception as e:
-        return "عذراً، حدث خطأ بسيط."
+        print(f"Error calling Claude API: {e}")
+        return "أهلاً! استلمت رسالتك، أراجعها وأرد عليك."
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
@@ -45,7 +58,6 @@ def handle_all_messages(message):
     bot.reply_to(message, reply_text)
 
 if __name__ == "__main__":
-    # تشغيل خادم الويب على البورت المخصص من Render
     def run_flask():
         port = int(os.environ.get("PORT", 10000))
         app.run(host="0.0.0.0", port=port)
@@ -54,7 +66,7 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
 
-    # إزالة الـ Webhook وتجاوز أي رسائل معلقة لمنع خطأ 409 Conflict تماماً
+    # تنظيف الجلسات القديمة وتشغيل البوت بوضعية الأمان
     bot.remove_webhook()
-    print("البوت يعمل الآن بأمان تام وبدون تعارض...")
+    print("البوت يعمل الآن ومربوط بالذكاء الاصطناعي...")
     bot.infinity_polling(skip_pending=True)
