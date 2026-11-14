@@ -8,7 +8,7 @@ import psycopg2
 # Initialize environment variables
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = "postgresql://postgres:gQUEiIIrxzzouLVuCygKsJniAsbwvLaK@postgres.railway.internal:5432/railway"
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 bot = telebot.TeleBot(TOKEN)
