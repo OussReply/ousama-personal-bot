@@ -16,6 +16,9 @@ app = Flask(__name__)
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 def get_db_connection():
+    if not DATABASE_URL:
+        raise ValueError("CRITICAL: DATABASE_URL environment variable is missing or empty!")
+    print(f"Connecting to database using URL starting with: {DATABASE_URL[:15]}...")
     return psycopg2.connect(DATABASE_URL)
 
 def init_db():
