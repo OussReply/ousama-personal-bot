@@ -15,6 +15,12 @@ bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
+@bot.message_handler(func=lambda msg: True)
+def echo_all(message):
+    user_text = message.text
+    # رد مؤقت للتأكد من أن البوت استقبل الرسالة ورد عليها
+    bot.reply_to(message, f"أهلاً بك! لقد استلمت رسالتك: {user_text}")
+
 def get_db_connection():
     if not DATABASE_URL:
         raise ValueError("CRITICAL: DATABASE_URL environment variable is missing or empty!")
@@ -65,12 +71,6 @@ def webhook():
         return '', 200
     else:
         return 'Forbidden', 403
-        
-@bot.message_handler(func=lambda msg: True)
-def echo_all(message):
-    user_text = message.text
-    # رد مؤقت للتأكد من أن البوت استقبل الرسالة ورد عليها
-    bot.reply_to(message, f"أهلاً بك! لقد استلمت رسالتك: {user_text}")
     
 @app.route("/", methods=["GET"])
 def index():
