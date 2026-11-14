@@ -99,5 +99,5 @@ if __name__ == "__main__":
         bot.set_webhook(url=full_webhook_url)
         print(f"Webhook configured successfully: {full_webhook_url}")
         
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
