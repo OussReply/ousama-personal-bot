@@ -64,6 +64,7 @@ def envoyer_message_long(chat_id, text):
 
 @app.route(f"/{TOKEN}", methods=['POST'])
 def webhook():
+    print("--> Received a message from Telegram!")
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
