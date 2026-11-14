@@ -6,7 +6,7 @@ import anthropic
 import psycopg2
 
 # Initialize environment variables
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TOKEN = "9208308526:AAHmjnPi6cVizlIAa5u3IkDAu0b_hYjZAqw"
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 DATABASE_URL = "postgresql://postgres:gQUEiIIrxzzouLVuCygKsJniAsbwvLaK@postgres.railway.internal:5432/railway"
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
