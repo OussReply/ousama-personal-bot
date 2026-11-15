@@ -66,8 +66,7 @@ def envoyer_message_long(chat_id, text):
     for i in range(0, len(text), max_length):
         bot.send_message(chat_id, text[i:i+max_length])
 
-def process_message_async(chat_id, user_text, message_obj):
-    """معالجة الرسالة والاتصال بـ Claude وقاعدة البيانات في الخلفية بأمان تام"""
+def process_message_async(chat_id, user_text):
     try:
         print(f"بدء المعالجة الخلفية [Chat ID: {chat_id}]: {user_text}")
         save_message_to_db(chat_id, "user", user_text)
@@ -92,7 +91,6 @@ def process_message_async(chat_id, user_text, message_obj):
 
 @app.route(f"/{TOKEN}", methods=['POST'])
 def webhook():
-    """استقبال الطلب والرد الفوري بـ 200 OK لتيليجرام لمنع أخطاء 502 قطعيًا"""
     try:
         json_data = request.get_json(silent=True)
         if json_data and 'message' in json_data:
@@ -101,8 +99,7 @@ def webhook():
             user_text = msg.get('text')
             
             if chat_id and user_text:
-                # تشغيل المعالجة في الخلفية وإرجاع الاستجابة فوراً لتيليجرام
-                threading.Thread(target=process_message_async, args=(chat_id, user_text, None)).start()
+                threading.Thread(target=process_message_async, args=(chat_id, user_text)).start()
     except Exception as e:
         print(f"Webhook parsing error: {e}")
         
@@ -112,8 +109,6 @@ def webhook():
 def index():
     return "Pro Replay Bot is running securely!", 200
 
-if __name__ == "__main__":
-    init_db()
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+# تهيئة قاعدة البيانات عند بدء التشغيل
+init_db()
           
