@@ -120,9 +120,12 @@ if __name__ == "__main__":
     
     if WEBHOOK_URL:
         full_webhook_url = f"{WEBHOOK_URL.strip('/')}/{TOKEN}"
-        bot.remove_webhook()
-        bot.set_webhook(url=full_webhook_url)
-        print(fecho := f"Webhook configured successfully: {full_webhook_url}")
+        try:
+            # تعيين الويب هوك مباشرة دون الحاجة لـ remove_webhook()
+            bot.set_webhook(url=full_webhook_url)
+            print(f"Webhook configured successfully: {full_webhook_url}")
+        except Exception as e:
+            print(f"Failed to set webhook: {e}")
         
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
