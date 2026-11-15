@@ -64,14 +64,16 @@ def envoyer_message_long(chat_id, text):
 
 @app.route(f"/{TOKEN}", methods=['POST'])
 def webhook():
-    print("--> Received a message from Telegram!")
-    if request.headers.get('content-type') == 'application/json':
+    print("=== تم استلام طلب من تيليجرام! ===")
+    try:
         json_string = request.get_data().decode('utf-8')
+        print(f"بيانات الطلب: {json_string}")
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return '', 200
-    else:
-        return 'Forbidden', 403
+    except Exception as e:
+        print(f"خطأ أثناء معالجة التحديث: {e}")
+        return 'Error', 500
     
 @app.route("/", methods=["GET"])
 def index():
