@@ -4,89 +4,85 @@ import telebot
 from flask import Flask, request
 import anthropic
 import psycopg2
+from contextlib import contextmanager
 
-# Initialize environment variables
+# إعداد المتغيرات الأساسية والبيانات الحساسة
 TOKEN = "9208308526:AAHmjnPi6cVizlIAa5u3IkDAu0b_hYjZAqw"
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-DATABASE_URL = "postgresql://postgres:gQUEiIIrxzzouLVuCygKsJniAsbwvLaK@postgres.railway.internal:5432/railway"
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:gQUEiIIrxzzouLVuCygKsJniAsbwvLaK@postgres.railway.internal:5432/railway")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://worker-production-2de8bf40.up.railway.app")
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
-@bot.message_handler(func=lambda msg: True)
-def echo_all(message):
-    user_text = message.text
-    # رد مؤقت للتأكد من أن البوت استقبل الرسالة ورد عليها
-    bot.reply_to(message, f"أهلاً بك! لقد استلمت رسالتك: {user_text}")
-
-def get_db_connection():
-    if not DATABASE_URL:
-        raise ValueError("CRITICAL: DATABASE_URL environment variable is missing or empty!")
-    print(f"Connecting to database using URL starting with: {DATABASE_URL[:15]}...")
-    return psycopg2.connect(DATABASE_URL)
+@contextmanager
+def get_db_cursor():
+    """مدير سياق آمن لفتح وإغلاق اتصالات قاعدة البيانات تلقائياً لمنع أي تسريب للموارد."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        yield cur
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Database transaction error: {e}")
+        raise
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id SERIAL PRIMARY KEY,
-            chat_id BIGINT,
-            role TEXT,
-            content TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    cur.close()
-    conn.close()
+    """تهيئة جدول الرسائل بأمان عند الإقلاع."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS messages (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT,
+                    role TEXT,
+                    content TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+        print("Database initialized successfully.")
+    except Exception as e:
+        print(f"Database init critical error: {e}")
 
 def save_message_to_db(chat_id, role, content):
+    """حفظ الرسائل في قاعدة البيانات مع ضمان إغلاق الاتصال مهما حدث."""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO messages (chat_id, role, content) VALUES (%s, %s, %s)",
-            (chat_id, role, content)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+        with get_db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO messages (chat_id, role, content) VALUES (%s, %s, %s)",
+                (chat_id, role, content)
+            )
     except Exception as e:
-        print(f"Database error: {e}")
+        print(f"Failed to save message to DB: {e}")
 
 def envoyer_message_long(chat_id, text):
+    """تقسيم الرسائل الطويلة وإرسالها لتجنب قيود تيليجرام (4096 حرف)."""
     max_length = 4096
     for i in range(0, len(text), max_length):
         bot.send_message(chat_id, text[i:i+max_length])
 
-@app.route(f"/{TOKEN}", methods=['POST'])
-def webhook():
-    print("=== تم استلام طلب من تيليجرام! ===")
-    try:
-        json_string = request.get_data().decode('utf-8')
-        print(f"بيانات الطلب: {json_string}")
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
-    except Exception as e:
-        print(f"خطأ أثناء معالجة التحديث: {e}")
-        return 'Error', 500
-    
-@app.route("/", methods=["GET"])
-def index():
-    return "Pro Replay Bot is running!", 200
-
+# معالج الرسائل الموحد
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     chat_id = message.chat.id
     user_text = message.text
+    print(f"استقبال رسالة من [Chat ID: {chat_id}]: {user_text}")
     
     try:
+        # حفظ رسالة المستخدم
         save_message_to_db(chat_id, "user", user_text)
         
+        # استدعاء نموذج Claude
         response = client.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=1000,
@@ -94,13 +90,32 @@ def handle_message(message):
         )
         
         reply_texte = response.content[0].text
+        
+        # حفظ رد المساعد وإرساله
         save_message_to_db(chat_id, "assistant", reply_texte)
         envoyer_message_long(chat_id, reply_texte)
+        print("تم الرد وإرسال الرسالة بنجاح.")
         
     except Exception as e:
-        print("CRITICAL ERROR DURING CLAUDE CALL:")
+        print("CRITICAL ERROR DURING CLAUDE/DB EXECUTION:")
         print(traceback.format_exc())
-        bot.reply_to(message, "Sorry, I am experiencing temporary system pressure. Please try sending your message again in a moment.")
+        bot.reply_to(message, "عذراً، أواجه ضغطاً مؤقتاً في النظام. يرجى المحاولة بعد قليل.")
+
+@app.route(f"/{TOKEN}", methods=['POST'])
+def webhook():
+    """نقطة استقبال الويب هوك من تيليجرام."""
+    try:
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    except Exception as e:
+        print(f"Webhook processing error: {e}")
+        return 'Error', 500
+     
+@app.route("/", methods=["GET"])
+def index():
+    return "Pro Replay Bot is running securely!", 200
 
 if __name__ == "__main__":
     init_db()
