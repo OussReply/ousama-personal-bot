@@ -67,7 +67,7 @@ def envoyer_message_long(chat_id, text):
         bot.send_message(chat_id, text[i:i+max_length])
 
 def process_message_async(chat_id, user_text, message_obj):
-    """تنفيذ عملية Claude وقاعدة البيانات في الخلفية بعيداً عن اتصال الويب هوك"""
+    """معالجة الرسالة والاتصال بـ Claude وقاعدة البيانات في الخلفية بأمان تام"""
     try:
         print(f"بدء المعالجة الخلفية [Chat ID: {chat_id}]: {user_text}")
         save_message_to_db(chat_id, "user", user_text)
@@ -92,22 +92,21 @@ def process_message_async(chat_id, user_text, message_obj):
 
 @app.route(f"/{TOKEN}", methods=['POST'])
 def webhook():
-    """الاستقبال الفوري المطلق والرد بـ 200 OK لمنع أي خطأ 502"""
+    """استقبال الطلب والرد الفوري بـ 200 OK لتيليجرام لمنع أخطاء 502 قطعيًا"""
     try:
-        json_data = request.get_json(force=True)
-        update = telebot.types.Update.de_json(json_data)
-        
-        if update and update.message:
-            chat_id = update.message.chat.id
-            user_text = update.message.text
-            if user_text:
-                # تشغيل المعالجة فوراً في خيط منفصل والعودة فوراً لتيليجرام
-                threading.Thread(target=process_message_async, args=(chat_id, user_text, update.message)).start()
-                
-        return 'OK', 200
+        json_data = request.get_json(silent=True)
+        if json_data and 'message' in json_data:
+            msg = json_data['message']
+            chat_id = msg.get('chat', {}).get('id')
+            user_text = msg.get('text')
+            
+            if chat_id and user_text:
+                # تشغيل المعالجة في الخلفية وإرجاع الاستجابة فوراً لتيليجرام
+                threading.Thread(target=process_message_async, args=(chat_id, user_text, None)).start()
     except Exception as e:
-        print(f"Webhook processing error: {e}")
-        return 'OK', 200  # نرجع 200 دائماً لتفادي حظر التيليجرام أو تكرار الأخطاء
+        print(f"Webhook parsing error: {e}")
+        
+    return '', 200
 
 @app.route("/", methods=["GET"])
 def index():
