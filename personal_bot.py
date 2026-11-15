@@ -1,12 +1,13 @@
 import os
 import traceback
+import threading
 import telebot
 from flask import Flask, request
 import anthropic
 import psycopg2
 from contextlib import contextmanager
 
-# إعداد المتغيرات الأساسية والبيانات الحساسة
+# إعداد المتغيرات الأساسية
 TOKEN = "9208308526:AAHmjnPi6cVizlIAa5u3IkDAu0b_hYjZAqw"
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:gQUEiIIrxzzouLVuCygKsJniAsbwvLaK@postgres.railway.internal:5432/railway")
@@ -18,7 +19,7 @@ client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 @contextmanager
 def get_db_cursor():
-    """مدير سياق آمن لفتح وإغلاق اتصالات قاعدة البيانات تلقائياً لمنع أي تسريب للموارد."""
+    """مدير سياق آمن لفتح وإغلاق اتصالات قاعدة البيانات."""
     conn = None
     cur = None
     try:
@@ -38,7 +39,6 @@ def get_db_cursor():
             conn.close()
 
 def init_db():
-    """تهيئة جدول الرسائل بأمان عند الإقلاع."""
     try:
         with get_db_cursor() as cur:
             cur.execute('''
@@ -55,7 +55,6 @@ def init_db():
         print(f"Database init critical error: {e}")
 
 def save_message_to_db(chat_id, role, content):
-    """حفظ الرسائل في قاعدة البيانات مع ضمان إغلاق الاتصال مهما حدث."""
     try:
         with get_db_cursor() as cur:
             cur.execute(
@@ -66,23 +65,16 @@ def save_message_to_db(chat_id, role, content):
         print(f"Failed to save message to DB: {e}")
 
 def envoyer_message_long(chat_id, text):
-    """تقسيم الرسائل الطويلة وإرسالها لتجنب قيود تيليجرام (4096 حرف)."""
     max_length = 4096
     for i in range(0, len(text), max_length):
         bot.send_message(chat_id, text[i:i+max_length])
 
-# معالج الرسائل الموحد
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    chat_id = message.chat.id
-    user_text = message.text
-    print(f"استقبال رسالة من [Chat ID: {chat_id}]: {user_text}")
-    
+def process_message_async(chat_id, user_text, message_obj):
+    """معالجة رسالة المستخدم والاتصال بـ Claude في الخلفية لمنع حدوث Timeout."""
     try:
-        # حفظ رسالة المستخدم
+        print(f"معالجة الرسالة في الخلفية [Chat ID: {chat_id}]: {user_text}")
         save_message_to_db(chat_id, "user", user_text)
         
-        # استدعاء نموذج Claude
         response = client.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=1000,
@@ -90,20 +82,26 @@ def handle_message(message):
         )
         
         reply_texte = response.content[0].text
-        
-        # حفظ رد المساعد وإرساله
         save_message_to_db(chat_id, "assistant", reply_texte)
         envoyer_message_long(chat_id, reply_texte)
-        print("تم الرد وإرسال الرسالة بنجاح.")
+        print("تم إرسال الرد بنجاح.")
         
     except Exception as e:
         print("CRITICAL ERROR DURING CLAUDE/DB EXECUTION:")
         print(traceback.format_exc())
-        bot.reply_to(message, "عذراً، أواجه ضغطاً مؤقتاً في النظام. يرجى المحاولة بعد قليل.")
+        bot.reply_to(message_obj, "عذراً، أواجه ضغطاً مؤقتاً في النظام. يرجى المحاولة بعد قليل.")
+
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    chat_id = message.chat.id
+    user_text = message.text
+    
+    # تشغيل المعالجة في خيط خلفي (Background Thread) لكي تعود الويب هوك بـ 200 فوراً
+    threading.Thread(target=process_message_async, args=(chat_id, user_text, message)).start()
 
 @app.route(f"/{TOKEN}", methods=['POST'])
 def webhook():
-    """نقطة استقبال الويب هوك من تيليجرام."""
+    """الاستقبال الفوري لطلبات تيليجرام والرد بـ 200 OK دون تأخير."""
     try:
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
@@ -124,7 +122,7 @@ if __name__ == "__main__":
         full_webhook_url = f"{WEBHOOK_URL.strip('/')}/{TOKEN}"
         bot.remove_webhook()
         bot.set_webhook(url=full_webhook_url)
-        print(f"Webhook configured successfully: {full_webhook_url}")
+        print(fecho := f"Webhook configured successfully: {full_webhook_url}")
         
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
