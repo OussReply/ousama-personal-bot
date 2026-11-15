@@ -8,7 +8,7 @@ import psycopg2
 from contextlib import contextmanager
 
 # إعداد المتغيرات الأساسية
-TOKEN = "apikey_01V5e4ZkUvLRcCcfp2dYkVja"
+TOKEN = "9208308526:AAHmjnPi6cVizlIAa5u3IkDAu0b_hYjZAqw"
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:gQUEiIIrxzzouLVuCygKsJniAsbwvLaK@postgres.railway.internal:5432/railway")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://worker-production-2de8bf40.up.railway.app")
