@@ -54,7 +54,7 @@ def handle_all_messages(message):
     try:
         # إرسال الرسالة إلى Claude مع توجيه ليتصرف كمساعد خدمة عملاء احترافي
         response = client.messages.create(
-            model="claude-3-haiku-20240307",  # نموذج سريع واقتصادي للردود
+            model="claude-haiku-5-5",  # نموذج سريع واقتصادي للردود
             max_tokens=300,
             system="أنت مساعد خدمة عملاء ودود واحترافي لمتجر إلكتروني. أجب عن استفسارات الزبائن بشكل لطيف، مختصر، ومفيد باللغة التي يخاطبونك بها.",
             messages=[
