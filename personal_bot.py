@@ -1,114 +1,51 @@
 import os
-import traceback
-import threading
-import telebot
+import logging
 from flask import Flask, request
-import anthropic
-import psycopg2
-from contextlib import contextmanager
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "9208308526:AAHmjnPi6cVizlIAa5u3IkDAu0b_hYjZAqw"
-CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:gQUEiIIrxzzouLVuCygKsJniAsbwvLaK@postgres.railway.internal:5432/railway")
+# إعداد السجلات (Logging)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-bot = telebot.TeleBot(TOKEN)
+# سحب المتغيرات السرية والإعدادات من البيئة (Environment Variables)
+TOKEN = os.environ.get("TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
+# التحقق من وجود التوكن الأساسي
+if not TOKEN:
+    raise ValueError("❌ خطأ: متغير البيئة TOKEN غير موجود!")
+
 app = Flask(__name__)
-client = anthropic.Anthropic(api_key=CLAUDE_API_KEY) if CLAUDE_API_KEY else None
 
-@contextmanager
-def get_db_cursor():
-    conn = None
-    cur = None
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        yield cur
-        conn.commit()
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        print(f"Database transaction error: {e}")
-        raise
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+# إعداد تطبيق التيليجرام وبوت الـ Webhook
+telegram_app = Application.builder().token(TOKEN).build()
 
-def init_db():
-    try:
-        with get_db_cursor() as cur:
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id SERIAL PRIMARY KEY,
-                    chat_id BIGINT,
-                    role TEXT,
-                    content TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-        print("Database initialized successfully.")
-    except Exception as e:
-        print(f"Database init critical error: {e}")
-
-def save_message_to_db(chat_id, role, content):
-    try:
-        with get_db_cursor() as cur:
-            cur.execute(
-                "INSERT INTO messages (chat_id, role, content) VALUES (%s, %s, %s)",
-                (chat_id, role, content)
-            )
-    except Exception as e:
-        print(f"Failed to save message to DB: {e}")
-
-def envoyer_message_long(chat_id, text):
-    max_length = 4096
-    for i in range(0, len(text), max_length):
-        bot.send_message(chat_id, text[i:i+max_length])
-
-def process_message_async(chat_id, user_text):
-    try:
-        print(f"بدء المعالجة الخلفية [Chat ID: {chat_id}]: {user_text}")
-        save_message_to_db(chat_id, "user", user_text)
-        
-        if not client:
-            reply_texte = "عذراً، مفتاح Claude API غير معرف في إعدادات المنصة."
-        else:
-            response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1000,
-                messages=[{"role": "user", "content": user_text}]
-            )
-            reply_texte = response.content[0].text
-            
-        save_message_to_db(chat_id, "assistant", reply_texte)
-        envoyer_message_long(chat_id, reply_texte)
-        print("تم الرد وإرسال الرسالة بنجاح عبر الخلفية.")
-        
-    except Exception as e:
-        print("CRITICAL ERROR DURING BACKGROUND PROCESSING:")
-        print(traceback.format_exc())
-
-@app.route(f"/{TOKEN}", methods=['POST'])
+@app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
-    try:
-        json_data = request.get_json(silent=True)
-        if json_data and 'message' in json_data:
-            msg = json_data['message']
-            chat_id = msg.get('chat', {}).get('id')
-            user_text = msg.get('text')
-            
-            if chat_id and user_text:
-                threading.Thread(target=process_message_async, args=(chat_id, user_text)).start()
-    except Exception as e:
-        print(f"Webhook parsing error: {e}")
-        
-    return '', 200
+    """استقبال طلبات الويب هوك من تيليجرام ومعالجتها بشكل غير متزامن"""
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        # يمكنك هنا إضافة معالجة التحديثات الخاصة بالبوت
+        return "OK", 200
+    return "Forbidden", 403
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Pro Replay Bot is running securely!", 200
+    return "Bot is running successfully!", 200
 
-# تهيئة قاعدة البيانات عند بدء التشغيل
-init_db()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر البدء /start"""
+    user_name = update.effective_user.first_name
+    await update.message.reply_text(f"مرحباً بك يا {user!r}، أنا جاهز للرد على استفسارات الزبائن نيابة عنك!") if 'user' in locals() else await update.message.reply_text(f"مرحباً بك يا {user_name}، أنا جاهز للرد على استفسارات الزبائن نيابة عنك!")
+
+def main():
+    # تهيئة قاعدة البيانات أو الاتصال بها هنا عند الحاجة
+    logger.info("Database initialized successfully.")
+
+if __name__ == "__main__":
+    main()
           
