@@ -20,8 +20,7 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET")
 DEFAULT_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-3-5-haiku-20241022")
-
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-3-haiku-20240307")
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
