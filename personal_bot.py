@@ -110,6 +110,19 @@ def is_webchat_rate_limited(key):
     return False
 
 
+def safe_compare_secret(provided_secret, expected_secret):
+    """مقارنة آمنة زمنياً تدعم UTF-8 دون رمي TypeError مع الأحرف غير ASCII."""
+    if not provided_secret or not expected_secret:
+        return False
+    try:
+        return hmac.compare_digest(
+            str(provided_secret).encode("utf-8"),
+            str(expected_secret).encode("utf-8")
+        )
+    except Exception:
+        return False
+
+
 def verify_meta_signature(raw_body_bytes, signature_header):
     """يتحقق من توقيع Meta HMAC SHA-256 إذا تم ضبط META_APP_SECRET."""
     if not META_APP_SECRET:
@@ -501,7 +514,7 @@ def is_admin_authorized():
     if session.get("session_owner") == "admin" and session.get("admin_auth") is True:
         return True
     req_secret = request.args.get("secret", "") or request.headers.get("X-Admin-Secret", "")
-    if req_secret and hmac.compare_digest(req_secret, ADMIN_SECRET):
+    if safe_compare_secret(req_secret, ADMIN_SECRET):
         clear_client_session_keys()
         session["session_owner"] = "admin"
         session["admin_auth"] = True
@@ -1328,7 +1341,7 @@ def admin_login():
     error = ""
     if request.method == "POST":
         entered_secret = request.form.get("secret", "").strip()
-        if entered_secret and hmac.compare_digest(entered_secret, ADMIN_SECRET):
+        if safe_compare_secret(entered_secret, ADMIN_SECRET):
             clear_failed_admin_attempts(client_ip)
             clear_client_session_keys()
             session["session_owner"] = "admin"
@@ -2028,5 +2041,3 @@ def webchat_api(site_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-   
-   
