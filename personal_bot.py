@@ -729,4 +729,592 @@ DASHBOARD_HTML = """
         const baseUrl = window.location.origin;
         const code = `<div id="omnibot-box" style="position:fixed;bottom:20px;left:20px;z-index:9999;background:#0f172a;color:#fff;padding:14px;border-radius:12px;border:1px solid #38bdf8;width:290px;font-family:sans-serif;">
   <div style="font-weight:bold;margin-bottom:8px;">💬 المساعد الذكي</div>
-  <div id="omnibot-log" style="max-height:170px;overflow-y:auto;font-size:13px;margin-bottom:8px
+  <div id="omnibot-log" style="max-height:170px;overflow-y:auto;font-size:13px;margin-bottom:8px;"></div>
+  <input id="omnibot-inp" placeholder="اكتب رسالتك..." style="width:100%;padding:7px;border-radius:6px;border:none;margin-bottom:6px;box-sizing:border-box;">
+  <button onclick="sendOmniMsg()" style="width:100%;padding:7px;background:#0284c7;color:#fff;border:none;border-radius:6px;cursor:pointer;">إرسال</button>
+</div>
+<script>
+const sid = "web_" + Math.random().toString(36).slice(2, 9);
+async function sendOmniMsg() {
+  const inp = document.getElementById("omnibot-inp");
+  const log = document.getElementById("omnibot-log");
+  const txt = inp.value.trim();
+  if (!txt) return;
+  log.innerHTML += "<div><b>أنت:</b> " + txt + "</div>";
+  inp.value = "";
+  const r = await fetch("${baseUrl}/api/webchat/${siteId}", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({message: txt, session_id: sid})
+  });
+  const d = await r.json();
+  log.innerHTML += "<div style='color:#38bdf8;'><b>البوت:</b> " + (d.reply || "") + "</div>";
+  log.scrollTop = log.scrollHeight;
+}
+<\/script>`;
+        document.getElementById('webCodeBox').textContent = code;
+        document.getElementById('webModal').style.display = 'block';
+    }
+
+    function closeWebModal() {
+        document.getElementById('webModal').style.display = 'none';
+    }
+
+    function copyWebCode() {
+        const text = document.getElementById('webCodeBox').textContent;
+        navigator.clipboard.writeText(text);
+        alert('تم نسخ كود الموقع بنجاح!');
+    }
+
+    async function pollNotifications() {
+        try {
+            const res = await fetch('/admin/notifications-status');
+            if (!res.ok) return;
+            const data = await res.json();
+            const unread = Number(data.unread_count || 0);
+            document.getElementById('statUnread').textContent = unread;
+            const banner = document.getElementById('liveBanner');
+            const title = document.getElementById('liveBannerTitle');
+            const sub = document.getElementById('liveBannerSub');
+            if (unread > 0) {
+                banner.classList.add('has-unread');
+                title.textContent = `🔔 تنبيه: لديك ${unread} إشعار/رسالة جديدة غير مقروءة وصلتك!`;
+                if (data.latest) {
+                    sub.textContent = `آخر إشعار من (${data.latest.client_name} - ${data.latest.platform}): ${data.latest.message_text}`;
+                }
+                if (unread > lastKnownUnread) {
+                    lastKnownUnread = unread;
+                }
+            } else {
+                banner.classList.remove('has-unread');
+                title.textContent = '✅ مركز الإشعارات نشط — لا توجد إشعارات جديدة غير مقروءة حالياً.';
+                sub.textContent = 'يتم فحص وصول الإشعارات الجديدة تلقائياً كل 10 ثوانٍ.';
+                lastKnownUnread = 0;
+            }
+        } catch (e) {}
+    }
+
+    setInterval(pollNotifications, 10000);
+</script>
+</body>
+</html>
+"""
+
+
+# ================= مسارات النظام والإدارة =================
+@app.route("/", methods=["GET"])
+def index():
+    return "OmniBot SaaS Platform is Online!", 200
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if not ADMIN_SECRET:
+        return "يرجى ضبط متغير البيئة ADMIN_SECRET أولاً في Railway.", 500
+    error = ""
+    if request.method == "POST":
+        entered_secret = request.form.get("secret", "").strip()
+        if entered_secret == ADMIN_SECRET:
+            session["is_admin"] = True
+            return redirect(url_for("admin_dashboard"))
+        error = "رمز الدخول غير صحيح."
+    return f"""
+    <!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>دخول الإدارة</title>
+    <style>body{{font-family:system-ui;background:#0b1120;color:#f8fafc;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}}
+    .box{{background:#1e293b;padding:28px;border-radius:12px;width:340px;border:1px solid #334155}}
+    input{{width:100%;padding:10px;margin:12px 0;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;box-sizing:border-box}}
+    button{{width:100%;padding:10px;border:none;border-radius:8px;background:#0284c7;color:#fff;font-weight:bold;cursor:pointer}}
+    .err{{color:#f87171;font-size:13px;margin-bottom:8px}}</style></head>
+    <body><form method="POST" class="box"><h2>🔐 دخول لوحة الإدارة</h2>
+    {"<div class='err'>" + error + "</div>" if error else ""}
+    <input type="password" name="secret" placeholder="أدخل ADMIN_SECRET" required>
+    <button type="submit">دخول</button></form></body></html>
+    """
+
+
+@app.route("/admin/logout", methods=["GET"])
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
+
+
+@app.route("/admin/notifications-status", methods=["GET"])
+def admin_notifications_status():
+    if not is_authorized():
+        return jsonify({"error": "unauthorized"}), 403
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT COUNT(*) AS cnt FROM leads WHERE is_read = FALSE")
+        row_u = cur.fetchone()
+        unread_count = row_u["cnt"] if row_u else 0
+
+        cur.execute("SELECT client_name, platform, message_text, created_at FROM leads ORDER BY id DESC LIMIT 1")
+        latest = cur.fetchone()
+        cur.close()
+        return jsonify({
+            "unread_count": unread_count,
+            "latest": dict(latest) if latest else None
+        })
+    except Exception as e:
+        logger.error(f"Error fetching notification status: {e}")
+        return jsonify({"unread_count": 0, "latest": None})
+    finally:
+        release_db_connection(conn)
+
+
+@app.route("/admin/mark-read", methods=["POST"])
+def admin_mark_read():
+    if not is_authorized():
+        return "غير مصرح", 403
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE leads SET is_read = TRUE WHERE is_read = FALSE")
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Error marking leads read: {e}")
+    finally:
+        release_db_connection(conn)
+    return redirect(url_for("admin_dashboard", msg="تم تحديد جميع الإشعارات كمقروءة."))
+
+
+@app.route("/admin/test-alert", methods=["POST"])
+def admin_test_alert():
+    if not is_authorized():
+        return "غير مصرح", 403
+
+    save_lead(
+        "system_test",
+        "اختبار المنصة",
+        "admin_test",
+        ADMIN_CHAT_ID or "admin",
+        "لوحة التحكم",
+        "🔔 إشعار تجريبي: نظام التنبيهات يعمل بنجاح في لوحة الأدمن."
+    )
+
+    tg_token = ALERT_BOT_TOKEN
+    sent_tg = False
+    if tg_token and ADMIN_CHAT_ID:
+        sent_tg = send_to_chat_id(
+            tg_token,
+            ADMIN_CHAT_ID,
+            "🔔 إشعار تجريبي من OmniBot SaaS: تم التحقق من وصول التنبيهات إلى تيليجرام بنجاح."
+        )
+
+    if sent_tg:
+        msg = "✅ تم إرسال الإشعار التجريبي إلى صفحة الأدمن وإلى تيليجرام بنجاح!"
+    else:
+        msg = "⚠️ تم تسجيل الإشعار في صفحة الأدمن؛ تحقق من ضبط ALERT_BOT_TOKEN وADMIN_CHAT_ID والضغط على Start في البوت لإرسال تيليجرام."
+
+    return redirect(url_for("admin_dashboard", msg=msg))
+
+
+@app.route("/admin/export-leads", methods=["GET"])
+def admin_export_leads():
+    if not is_authorized():
+        return "غير مصرح", 403
+
+    conn = None
+    rows = []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, client_name, platform, sender_chat_id, sender_label, message_text, is_read, created_at FROM leads ORDER BY id DESC")
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        logger.error(f"Export error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Client", "Platform", "Sender ID", "Sender Label", "Message", "Is Read", "Created At"])
+    for r in rows:
+        writer.writerow([
+            r["id"], r["client_name"], r["platform"], r["sender_chat_id"],
+            r["sender_label"], r["message_text"], r["is_read"], r["created_at"]
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=omnibot_notifications_leads.csv"}
+    )
+
+
+@app.route("/admin", methods=["GET", "POST"])
+def admin_dashboard():
+    if not is_authorized():
+        return redirect(url_for("admin_login"))
+
+    msg = request.args.get("msg", "")
+
+    if request.method == "POST":
+        platform = request.form.get("platform", "telegram").strip()
+        token = request.form.get("token", "").strip()
+        name = request.form.get("name", "عميل جديد").strip()
+        prompt = request.form.get("prompt", "أنت مساعد ذكي.").strip()
+        welcome_message = request.form.get("welcome_message", "").strip()
+        notify_chat_id = request.form.get("notify_chat_id", "").strip()
+        auto_replies_raw = request.form.get("auto_replies", "{}").strip() or "{}"
+        quick_buttons_raw = request.form.get("quick_buttons", "[]").strip() or "[]"
+        extra_token = request.form.get("extra_token", "").strip()
+        api_key = request.form.get("api_key", "").strip() or DEFAULT_ANTHROPIC_KEY
+
+        try:
+            parsed_auto = json.loads(auto_replies_raw)
+            if not isinstance(parsed_auto, dict):
+                raise ValueError("auto_replies must be dict")
+            auto_replies_json = json.dumps(parsed_auto, ensure_ascii=False)
+        except Exception:
+            auto_replies_json = "{}"
+            msg = "⚠️ تنبيه: تم ضبط الردود التلقائية على {} بسبب صيغة JSON غير صالحة."
+
+        try:
+            parsed_btns = json.loads(quick_buttons_raw)
+            if not isinstance(parsed_btns, list):
+                raise ValueError("quick_buttons must be list")
+            quick_buttons_json = json.dumps(parsed_btns, ensure_ascii=False)
+        except Exception:
+            quick_buttons_json = "[]"
+
+        if token:
+            conn = None
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO clients (
+                        bot_token, client_name, system_prompt, welcome_message,
+                        notify_chat_id, auto_replies, quick_buttons, anthropic_key,
+                        platform, extra_token, is_active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                    ON CONFLICT (bot_token) DO UPDATE SET
+                        client_name = EXCLUDED.client_name,
+                        system_prompt = EXCLUDED.system_prompt,
+                        welcome_message = EXCLUDED.welcome_message,
+                        notify_chat_id = EXCLUDED.notify_chat_id,
+                        auto_replies = EXCLUDED.auto_replies,
+                        quick_buttons = EXCLUDED.quick_buttons,
+                        anthropic_key = EXCLUDED.anthropic_key,
+                        platform = EXCLUDED.platform,
+                        extra_token = EXCLUDED.extra_token,
+                        is_active = TRUE
+                """, (
+                    token, name, prompt, welcome_message, notify_chat_id,
+                    auto_replies_json, quick_buttons_json, api_key, platform, extra_token
+                ))
+                conn.commit()
+                cur.close()
+
+                host_url = request.host_url.rstrip("/").replace("http://", "https://")
+                if platform == "telegram":
+                    tg_res = set_tg_webhook(token, host_url)
+                    if tg_res.get("ok"):
+                        msg = f"✅ تم حفظ وتفعيل بوت تيليجرام ({name}) وضبط Webhook بنجاح!"
+                    else:
+                        msg = f"⚠️ تم الحفظ، ملاحظة تيليجرام: {tg_res.get('description')}"
+                elif platform == "whatsapp":
+                    msg = f"✅ تم تفعيل بوت واتساب ({name}). رابط Webhook: {host_url}/webhook/whatsapp"
+                elif platform == "instagram":
+                    msg = f"✅ تم تفعيل بوت إنستجرام ({name}). رابط Webhook: {host_url}/webhook/instagram"
+                elif platform == "web":
+                    msg = f"✅ تم تفعيل بوت الموقع ({name}). رابط API: {host_url}/api/webchat/{token}"
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                msg = f"❌ حدث خطأ أثناء الحفظ: {e}"
+            finally:
+                release_db_connection(conn)
+
+    conn = None
+    clients = []
+    leads = []
+    total_messages = 0
+    unread_count = 0
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM clients ORDER BY created_at DESC")
+        clients = cur.fetchall()
+
+        cur.execute("SELECT * FROM leads ORDER BY id DESC LIMIT 60")
+        leads = cur.fetchall()
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM leads WHERE is_read = FALSE")
+        r_unread = cur.fetchone()
+        unread_count = r_unread["cnt"] if r_unread else 0
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM chat_history")
+        r_msgs = cur.fetchone()
+        total_messages = r_msgs["cnt"] if r_msgs else 0
+        cur.close()
+    except Exception as e:
+        logger.error(f"Dashboard load error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    active_count = sum(1 for c in clients if c.get("is_active"))
+
+    return render_template_string(
+        DASHBOARD_HTML,
+        clients=clients,
+        leads=leads,
+        active_count=active_count,
+        total_messages=total_messages,
+        unread_count=unread_count,
+        msg=msg
+    )
+
+
+@app.route("/admin/toggle", methods=["POST"])
+def admin_toggle():
+    if not is_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+    state = request.form.get("active", "true").lower() == "true"
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE clients SET is_active = %s WHERE bot_token = %s", (state, token))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Toggle error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    action_word = "تفعيل" if state else "إيقاف"
+    return redirect(url_for("admin_dashboard", msg=f"تم {action_word} البوت بنجاح."))
+
+
+@app.route("/admin/rehook", methods=["POST"])
+def admin_rehook():
+    if not is_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+    host_url = request.host_url.rstrip("/").replace("http://", "https://")
+    tg_res = set_tg_webhook(token, host_url)
+    if tg_res.get("ok"):
+        return redirect(url_for("admin_dashboard", msg="✅ تم إعادة ربط Telegram Webhook بنجاح."))
+    return redirect(url_for("admin_dashboard", msg=f"⚠️ فشل إعادة الربط: {tg_res.get('description')}"))
+
+
+@app.route("/admin/delete", methods=["POST"])
+def admin_delete():
+    if not is_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM chat_history WHERE bot_token = %s", (token,))
+        cur.execute("DELETE FROM leads WHERE bot_token = %s", (token,))
+        cur.execute("DELETE FROM clients WHERE bot_token = %s", (token,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Delete error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return redirect(url_for("admin_dashboard", msg="🗑️ تم حذف البوت وسجله بنجاح."))
+
+
+@app.route("/admin/clear-leads", methods=["POST"])
+def admin_clear_leads():
+    if not is_authorized():
+        return "غير مصرح", 403
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM leads")
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Clear leads error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return redirect(url_for("admin_dashboard", msg="🧹 تم مسح سجل الإشعارات والرسائل."))
+
+
+# ================= 1. قناة تيليجرام =================
+@app.route("/webhook/<bot_token>", methods=["POST"])
+def telegram_webhook(bot_token):
+    client_data = get_client(bot_token)
+    if not client_data or not client_data.get("is_active"):
+        return "Bot inactive", 200
+
+    update_json = request.get_json(silent=True)
+    if not update_json:
+        return "Invalid payload", 400
+
+    update = telebot.types.Update.de_json(update_json)
+    if not update.message or not update.message.text:
+        return "OK", 200
+
+    chat_id = str(update.message.chat.id)
+    user_text = update.message.text.strip()
+    bot = telebot.TeleBot(bot_token)
+    markup = build_telegram_keyboard(client_data)
+
+    sender_name = (update.message.from_user.first_name if update.message.from_user else "") or "مستخدم"
+    sender_user = f"@{update.message.from_user.username}" if (update.message.from_user and update.message.from_user.username) else "بدون يوزر"
+    sender_label = f"{sender_name} ({sender_user})"
+
+    if user_text == "/start":
+        welcome = client_data.get("welcome_message") or f"أهلاً بك في {client_data['client_name']}! اختر من الأزرار أو اكتب سؤالك:"
+        bot.send_message(chat_id, welcome, reply_markup=markup)
+        return "OK", 200
+
+    if user_text == "🔄 محادثة جديدة":
+        clear_user_history(bot_token, chat_id)
+        bot.send_message(chat_id, "تم بدء محادثة جديدة. كيف يمكنني مساعدتك؟", reply_markup=markup)
+        return "OK", 200
+
+    is_urgent = (user_text == "📞 تواصل مع موظف")
+    handle_incoming_notification(client_data, "telegram", chat_id, sender_label, user_text, is_urgent=is_urgent)
+
+    if is_urgent:
+        bot.send_message(
+            chat_id,
+            "تم إرسال طلب تواصلك بنجاح إلى فريق الإدارة. سيتواصل معك المختص في أقرب وقت.",
+            reply_markup=markup
+        )
+        return "OK", 200
+
+    bot.send_chat_action(chat_id, "typing")
+    reply_text = generate_ai_reply(client_data, chat_id, user_text)
+    bot.send_message(chat_id, reply_text, reply_markup=markup)
+    return "OK", 200
+
+
+# ================= 2. قناة واتساب الرسمي =================
+@app.route("/webhook/whatsapp", methods=["GET", "POST"])
+def whatsapp_webhook():
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == META_VERIFY_TOKEN:
+            return challenge, 200
+        return "Forbidden", 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        for entry in data.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                phone_number_id = (value.get("metadata") or {}).get("phone_number_id")
+                for message in value.get("messages", []):
+                    if message.get("type") == "text" and phone_number_id:
+                        sender_phone = str(message.get("from", ""))
+                        user_text = (message.get("text") or {}).get("body", "").strip()
+                        if not user_text:
+                            continue
+
+                        client_data = get_client(phone_number_id)
+                        if client_data and client_data.get("is_active") and client_data.get("extra_token"):
+                            handle_incoming_notification(client_data, "whatsapp", sender_phone, "WhatsApp User", user_text)
+                            reply_text = generate_ai_reply(client_data, sender_phone, user_text)
+                            wa_url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+                            headers = {
+                                "Authorization": f"Bearer {client_data['extra_token']}",
+                                "Content-Type": "application/json"
+                            }
+                            payload = {
+                                "messaging_product": "whatsapp",
+                                "to": sender_phone,
+                                "text": {"body": reply_text}
+                            }
+                            requests.post(wa_url, headers=headers, json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"WhatsApp webhook error: {e}")
+
+    return "OK", 200
+
+
+# ================= 3. قناة إنستجرام =================
+@app.route("/webhook/instagram", methods=["GET", "POST"])
+def instagram_webhook():
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == META_VERIFY_TOKEN:
+            return challenge, 200
+        return "Forbidden", 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        for entry in data.get("entry", []):
+            ig_id = str(entry.get("id", ""))
+            for event in entry.get("messaging", []):
+                sender_id = str((event.get("sender") or {}).get("id", ""))
+                message = event.get("message") or {}
+                if message.get("is_echo"):
+                    continue
+                user_text = (message.get("text") or "").strip()
+                if sender_id and user_text and ig_id:
+                    client_data = get_client(ig_id)
+                    if client_data and client_data.get("is_active") and client_data.get("extra_token"):
+                        handle_incoming_notification(client_data, "instagram", sender_id, "Instagram User", user_text)
+                        reply_text = generate_ai_reply(client_data, sender_id, user_text)
+                        ig_url = f"https://graph.facebook.com/v18.0/{ig_id}/messages"
+                        headers = {
+                            "Authorization": f"Bearer {client_data['extra_token']}",
+                            "Content-Type": "application/json"
+                        }
+                        payload = {
+                            "recipient": {"id": sender_id},
+                            "message": {"text": reply_text}
+                        }
+                        requests.post(ig_url, headers=headers, json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"Instagram webhook error: {e}")
+
+    return "OK", 200
+
+
+# ================= 4. قناة موقع الويب =================
+@app.route("/api/webchat/<site_id>", methods=["POST"])
+def webchat_api(site_id):
+    client_data = get_client(site_id)
+    if not client_data or not client_data.get("is_active"):
+        return jsonify({"error": "Bot inactive or not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    user_text = str(payload.get("message", "")).strip()
+    session_id = str(payload.get("session_id", "")).strip() or (request.remote_addr or "web_visitor")
+
+    if not user_text:
+        return jsonify({"error": "Empty message"}), 400
+
+    handle_incoming_notification(client_data, "web", session_id, "زائر الموقع", user_text)
+    reply_text = generate_ai_reply(client_data, session_id, user_text)
+    return jsonify({"reply": reply_text}), 200
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
