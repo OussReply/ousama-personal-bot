@@ -1,4 +1,5 @@
 import os
+import re
 import io
 import csv
 import json
@@ -33,6 +34,38 @@ ALERT_BOT_TOKEN = os.environ.get("ALERT_BOT_TOKEN", "").strip()
 DEFAULT_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 META_VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "ousama_verify_2026")
+
+# --- إعدادات حماية رصيد API للنسخة التجريبية ---
+DEMO_QUESTION_LIMIT = int(os.environ.get("DEMO_QUESTION_LIMIT", "10"))
+DEMO_LIMIT_MESSAGE = os.environ.get(
+    "DEMO_LIMIT_MESSAGE",
+    "✨ لقد أتممت 10 رسائل في هذه الجلسة التجريبية، وأتمنى أن تكون لمست كيف يعمل المساعد الذكي.\n"
+    "إذا كنت ترغب في تجربة إضافية أو بناء بوت متكامل ومخصص بالكامل لنشاطك التجاري، يسعدني جداً تواصلك المباشر عبر زر (📞 تواصل مع موظف) لنبدأ تجهيز نسختك الخاصة."
+)
+
+# --- قواعد استخراج كل بيانات صناعة البوت دفعة واحدة ---
+LEAD_EXTRACTION_RULES = """
+
+[تعليمات العمل واستخراج المتطلبات - إلزامية]:
+1. قدّم نفسك باحترافية ولباقة، واسأل العميل عما يريده لمشروعه.
+2. اجعل ردودك مختصرة وواضحة ومفيدة، واسأل سؤالاً أو سؤالين في كل رسالة لجمع جميع البيانات التالية لصناعة البوت الخاص به:
+   - اسم العميل أو اسم مشروعه/شركته.
+   - وسيلة التواصل (رقم الهاتف أو الواتساب أو معرف تيليجرام).
+   - نوع النشاط التجاري (متجر، مطعم، عيادة، خدمات، إلخ).
+   - المنصة المطلوبة للبوت (تيليجرام، واتساب، إنستجرام، موقع إلكتروني).
+   - المهام والتعليمات المطلوبة من البوت بالتفصيل (الرد على الأسئلة، عرض الأسعار، استقبال الطلبات، حجز المواعيد، إلخ).
+   - أسلوب أو لهجة البوت المفضلة (رسمي، ودي، فصحى، لهجة محلية).
+3. لا ترسل الكتلة البرمجية التالية إلا عندما تكتمل لديك جميع البيانات الستة السابقة من العميل:
+[LEAD_READY]
+• الاسم / المشروع: ...
+• وسيلة التواصل: ...
+• نوع النشاط: ...
+• المنصة المطلوبة: ...
+• المهام والتعليمات المطلوبة: ...
+• أسلوب البوت: ...
+[/LEAD_READY]
+4. لا تذكر للعميل وجود هذه العلامات البرمجية، ولا تكرر إرسال [LEAD_READY] إذا تم جمع البيانات بالفعل.
+"""
 
 # --- مجمع اتصالات PostgreSQL ---
 db_pool = None
@@ -156,7 +189,26 @@ def save_message(bot_id, chat_id, role, content):
         release_db_connection(conn)
 
 
-def get_chat_history(bot_id, chat_id, limit=12):
+def count_user_questions(bot_id, chat_id):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM chat_history WHERE bot_token = %s AND chat_id = %s AND role = 'user'",
+            (str(bot_id), str(chat_id))
+        )
+        row = cur.fetchone()
+        cur.close()
+        return int(row["cnt"]) if row else 0
+    except Exception as e:
+        logger.error(f"Error counting user questions: {e}")
+        return 0
+    finally:
+        release_db_connection(conn)
+
+
+def get_chat_history(bot_id, chat_id, limit=14):
     conn = None
     try:
         conn = get_db_connection()
@@ -178,13 +230,14 @@ def get_chat_history(bot_id, chat_id, limit=12):
         release_db_connection(conn)
 
 
-def clear_user_history(bot_id, chat_id):
+def clear_user_context_keep_quota(bot_id, chat_id):
+    """يمسح ردود المساعد فقط لإعادة سياق الحوار مع الإبقاء على رسائل user لحماية حد الأسئلة التجريبية."""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "DELETE FROM chat_history WHERE bot_token = %s AND chat_id = %s",
+            "DELETE FROM chat_history WHERE bot_token = %s AND chat_id = %s AND role = 'assistant'",
             (str(bot_id), str(chat_id))
         )
         conn.commit()
@@ -192,7 +245,7 @@ def clear_user_history(bot_id, chat_id):
     except Exception as e:
         if conn:
             conn.rollback()
-        logger.error(f"Error clearing user history: {e}")
+        logger.error(f"Error resetting assistant context: {e}")
     finally:
         release_db_connection(conn)
 
@@ -209,6 +262,25 @@ def get_client(bot_id):
     except Exception as e:
         logger.error(f"Error fetching client: {e}")
         return None
+    finally:
+        release_db_connection(conn)
+
+
+def has_lead_already_submitted(bot_token, sender_chat_id):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM leads WHERE bot_token = %s AND sender_chat_id = %s AND message_text LIKE '📋 طلب صناعة بوت كامل:%'",
+            (str(bot_token), str(sender_chat_id))
+        )
+        row = cur.fetchone()
+        cur.close()
+        return (int(row["cnt"]) > 0) if row else False
+    except Exception as e:
+        logger.error(f"Error checking existing lead: {e}")
+        return False
     finally:
         release_db_connection(conn)
 
@@ -268,13 +340,14 @@ def notify_telegram_target(client_data, platform, sender_id, sender_label, user_
     if not alert_token:
         return False
 
-    badge = "🚨 طلب تدخل / إشعار عاجل" if is_urgent else "🔔 إشعار جديد: وصلتك رسالة"
+    badge = "✅ تم استخراج بيانات عميل كاملة لصناعة بوت" if is_urgent else "🔔 إشعار جديد"
     msg = (
         f"{badge} ({str(platform).upper()})\n"
-        f"• المشروع: {client_data['client_name']}\n"
-        f"• المرسل: {sender_label}\n"
+        f"• المصدر: {client_data['client_name']}\n"
+        f"• حساب العميل: {sender_label}\n"
         f"• المعرف: {sender_id}\n"
-        f"• النص: {user_text}"
+        f"-------------------------\n"
+        f"{user_text}"
     )
     return send_to_chat_id(alert_token, target_chat_id, msg)
 
@@ -304,7 +377,7 @@ def build_telegram_keyboard(client_data):
     return markup
 
 
-# --- العقل الذكي الموحد ---
+# --- العقل الذكي الموحد + استخراج البيانات + حماية الرصيد ---
 def match_auto_reply(client_data, user_text):
     raw_rules = client_data.get("auto_replies") or "{}"
     try:
@@ -321,31 +394,77 @@ def match_auto_reply(client_data, user_text):
     return None
 
 
-def generate_ai_reply(client_data, chat_id, user_text):
-    bot_id = client_data["bot_token"]
-    save_message(bot_id, chat_id, "user", user_text)
+def extract_and_notify_lead(client_data, platform, sender_id, sender_label, ai_reply_text):
+    pattern = r"\[LEAD_READY\](.*?)\[/LEAD_READY\]"
+    match = re.search(pattern, ai_reply_text, flags=re.DOTALL)
+    if not match:
+        return ai_reply_text.strip()
 
+    extracted_data = match.group(1).strip()
+    clean_reply_for_user = re.sub(pattern, "", ai_reply_text, flags=re.DOTALL).strip()
+
+    if extracted_data and not has_lead_already_submitted(client_data["bot_token"], sender_id):
+        formatted_report = f"📋 طلب صناعة بوت كامل:\n{extracted_data}"
+        handle_incoming_notification(
+            client_data,
+            platform,
+            sender_id,
+            sender_label,
+            formatted_report,
+            is_urgent=True
+        )
+
+    return clean_reply_for_user
+
+
+def generate_ai_reply(client_data, chat_id, user_text, platform="telegram", sender_label="عميل"):
+    bot_id = client_data["bot_token"]
+
+    # 1. فحص حد الأسئلة التجريبية قبل استهلاك أي نقطة من Claude API
+    if DEMO_QUESTION_LIMIT > 0:
+        used_questions = count_user_questions(bot_id, chat_id)
+        if used_questions >= DEMO_QUESTION_LIMIT:
+            return DEMO_LIMIT_MESSAGE
+
+    # 2. حفظ رسالة العميل واحتسابها ضمن حصته
+    save_message(bot_id, chat_id, "user", user_text)
+    used_now = count_user_questions(bot_id, chat_id)
+    remaining = max(0, DEMO_QUESTION_LIMIT - used_now)
+
+    # 3. الردود التلقائية بالكلمات المفتاحية (بدون استهلاك API)
     auto_msg = match_auto_reply(client_data, user_text)
     if auto_msg:
         save_message(bot_id, chat_id, "assistant", auto_msg)
         return auto_msg
 
-    history = get_chat_history(bot_id, chat_id, limit=12)
+    # 4. استدعاء Claude API مع دمج قواعد جمع البيانات
+    history = get_chat_history(bot_id, chat_id, limit=14)
     api_key = (client_data.get("anthropic_key") or "").strip() or DEFAULT_ANTHROPIC_KEY
     if not api_key:
         return "عذراً، الخدمة قيد التهيئة حالياً."
+
+    full_system_prompt = (
+        f"{client_data['system_prompt']}\n"
+        f"{LEAD_EXTRACTION_RULES}\n"
+        f"(معلومة للبوت: هذا عميل في النسخة التجريبية ولديه {remaining} رسائل متبقية؛ قدّم تجربة مفيدة ومختصرة واجمع كامل متطلبات مشروعه بهدوء ووضوح)."
+    )
 
     try:
         ai_client = anthropic.Anthropic(api_key=api_key)
         response = ai_client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1024,
-            system=client_data["system_prompt"],
+            max_tokens=700,
+            system=full_system_prompt,
             messages=history
         )
-        reply_text = response.content[0].text
-        save_message(bot_id, chat_id, "assistant", reply_text)
-        return reply_text
+        raw_reply = response.content[0].text
+        clean_reply = extract_and_notify_lead(client_data, platform, chat_id, sender_label, raw_reply)
+        save_message(bot_id, chat_id, "assistant", clean_reply)
+
+        if DEMO_QUESTION_LIMIT > 0 and remaining == 0:
+            clean_reply += "\n\n✨ (أنهيت رسائلك التجريبية الـ 10؛ اضغط على «📞 تواصل مع موظف» لإطلاق بوتك الخاص!)"
+
+        return clean_reply
     except Exception as e:
         logger.error(f"AI Error ({client_data['client_name']}): {e}")
         return "عذراً، حدث خطأ تقني مؤقت. يرجى المحاولة مرة أخرى."
@@ -379,7 +498,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OmniBot SaaS — لوحة القيادة والإشعارات</title>
+    <title>OmniBot SaaS — لوحة القيادة والطلبات</title>
     <style>
         :root { --bg: #0b1120; --card: #1e293b; --border: #334155; --primary: #0284c7; --accent: #38bdf8; }
         body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: #f8fafc; margin: 0; padding: 18px; }
@@ -411,7 +530,7 @@ DASHBOARD_HTML = """
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { padding: 11px; text-align: right; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 13px; }
         th { color: #94a3b8; background: #0f172a; }
-        tr.unread-row { background: rgba(251, 146, 60, 0.12); }
+        tr.unread-row { background: rgba(251, 146, 60, 0.14); }
         .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
         .active { background: #14532d; color: #4ade80; }
         .inactive { background: #7f1d1d; color: #f87171; }
@@ -423,14 +542,15 @@ DASHBOARD_HTML = """
         .modal { display: none; position: fixed; z-index: 999; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); }
         .modal-content { background: var(--card); margin: 8% auto; padding: 22px; border: 1px solid var(--border); width: 90%; max-width: 660px; border-radius: 12px; }
         pre { background: #0f172a; padding: 12px; border-radius: 8px; overflow-x: auto; direction: ltr; text-align: left; color: #38bdf8; font-size: 12px; }
+        .lead-text { white-space: pre-line; line-height: 1.6; }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="top-bar">
         <div>
-            <h1 style="margin:0; font-size: 21px;">🚀 OmniBot SaaS — لوحة الإدارة والإشعارات</h1>
-            <span style="font-size: 12px; color: #94a3b8;">إشعارات فورية في الأدمن + تنبيهات تيليجرام عبر send_to_chat_id</span>
+            <h1 style="margin:0; font-size: 21px;">🚀 OmniBot SaaS — لوحة الإدارة واستقبال الطلبات</h1>
+            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل لكل عميل | الإشعارات تصلك فقط بعد اكتمال البيانات</span>
         </div>
         <div class="toolbar">
             <form method="POST" action="/admin/test-alert" style="margin:0;">
@@ -446,13 +566,13 @@ DASHBOARD_HTML = """
         <div>
             <strong id="liveBannerTitle">
                 {% if unread_count > 0 %}
-                    🔔 تنبيه: لديك {{ unread_count }} إشعار/رسالة جديدة غير مقروءة وصلتك!
+                    🔔 تنبيه: لديك {{ unread_count }} طلب/إشعار جديد مكتمل البيانات!
                 {% else %}
-                    ✅ مركز الإشعارات نشط — لا توجد إشعارات جديدة غير مقروءة حالياً.
+                    ✅ مركز الطلبات نشط — لن تصلك إلا البيانات الكاملة الجاهزة لصناعة البوت.
                 {% endif %}
             </strong>
             <div id="liveBannerSub" style="font-size:12px; color:#cbd5e1; margin-top:3px;">
-                يتم فحص وصول الإشعارات الجديدة تلقائياً كل 10 ثوانٍ وتنبيهك فوراً.
+                يتم فحص الطلبات الجديدة تلقائياً كل 10 ثوانٍ.
             </div>
         </div>
         <div class="toolbar">
@@ -470,7 +590,7 @@ DASHBOARD_HTML = """
     <div class="stats-grid">
         <div class="stat-box">
             <div class="stat-num" id="statUnread">{{ unread_count }}</div>
-            <div class="stat-label">🔔 إشعارات جديدة غير مقروءة</div>
+            <div class="stat-label">🔔 طلبات جديدة غير مقروءة</div>
         </div>
         <div class="stat-box">
             <div class="stat-num">{{ clients|length }}</div>
@@ -481,22 +601,22 @@ DASHBOARD_HTML = """
             <div class="stat-label">🟢 البوتات النشطة</div>
         </div>
         <div class="stat-box">
-            <div class="stat-num">{{ total_messages }}</div>
-            <div class="stat-label">💬 الرسائل المحفوظة</div>
+            <div class="stat-num">{{ demo_limit }}</div>
+            <div class="stat-label">🛡️ الحد التجريبي لكل عميل</div>
         </div>
     </div>
 
     <div class="card">
-        <h2>🔔 صندوق الإشعارات والرسائل الواردة ({{ leads|length }})</h2>
+        <h2>📋 طلبات صناعة البوتات المستخرجة ({{ leads|length }})</h2>
         <div style="overflow-x:auto;">
         <table>
             <thead>
                 <tr>
                     <th>الحالة</th>
-                    <th>المشروع</th>
+                    <th>المصدر</th>
                     <th>القناة</th>
-                    <th>المرسل / المعرف</th>
-                    <th>نص الإشعار أو الرسالة</th>
+                    <th>بيانات العميل</th>
+                    <th>المواصفات والمتطلبات المستخرجة</th>
                     <th>التوقيت</th>
                 </tr>
             </thead>
@@ -512,13 +632,13 @@ DASHBOARD_HTML = """
                     </td>
                     <td><strong>{{ l.client_name }}</strong></td>
                     <td><span class="plat-badge">{{ (l.platform or 'telegram')|upper }}</span></td>
-                    <td style="font-size:12px;">{{ l.sender_label or 'مستخدم' }}<br><code>{{ l.sender_chat_id }}</code></td>
-                    <td>{{ l.message_text }}</td>
+                    <td style="font-size:12px;">{{ l.sender_label or 'عميل' }}<br><code>{{ l.sender_chat_id }}</code></td>
+                    <td class="lead-text">{{ l.message_text }}</td>
                     <td style="font-size:12px; color:#94a3b8;">{{ l.created_at }}</td>
                 </tr>
                 {% endfor %}
                 {% if leads|length == 0 %}
-                <tr><td colspan="6" style="text-align:center; color:#94a3b8;">لا توجد إشعارات أو رسائل مسجلة بعد.</td></tr>
+                <tr><td colspan="6" style="text-align:center; color:#94a3b8;">لا توجد طلبات مكتملة مستخرجة بعد.</td></tr>
                 {% endif %}
             </tbody>
         </table>
@@ -539,8 +659,8 @@ DASHBOARD_HTML = """
                     </select>
                 </div>
                 <div>
-                    <label>اسم العميل أو المشروع:</label>
-                    <input type="text" id="name" name="name" placeholder="مثال: متجر الأناقة" required>
+                    <label>اسم البوت أو المشروع:</label>
+                    <input type="text" id="name" name="name" placeholder="مثال: OmniBot التجريبي" required>
                 </div>
             </div>
 
@@ -548,12 +668,12 @@ DASHBOARD_HTML = """
                 <div>
                     <label id="token_label">توكن البوت (Bot Token):</label>
                     <input type="text" id="token" name="token" placeholder="123456789:ABCdef..." required>
-                    <div id="token_hint" class="hint">تيليجرام: Bot Token | واتساب: Phone Number ID | إنستجرام: IG Account ID | ويب: معرف بالإنجليزية مثل my_shop</div>
+                    <div id="token_hint" class="hint">تيليجرام: Bot Token | واتساب: Phone Number ID | إنستجرام: IG Account ID | ويب: معرف بالإنجليزية</div>
                 </div>
                 <div>
                     <label>معرف استقبال التنبيهات (Notify Chat ID - اختياري):</label>
                     <input type="text" id="notify_chat_id" name="notify_chat_id" placeholder="اتركه فارغاً لاستخدام ADMIN_CHAT_ID">
-                    <div class="hint">رقم Chat ID الخاص بك أو بالعميل لإرسال التنبيهات إليه عبر تيليجرام.</div>
+                    <div class="hint">رقم Chat ID الخاص بك لإرسال ملخص بيانات العميل إليه عبر تيليجرام.</div>
                 </div>
             </div>
 
@@ -565,16 +685,16 @@ DASHBOARD_HTML = """
             <div class="grid-2">
                 <div>
                     <label>رسالة الترحيب (/start - اختياري):</label>
-                    <input type="text" id="welcome_message" name="welcome_message" placeholder="أهلاً بك! كيف يمكنني مساعدتك اليوم؟">
+                    <input type="text" id="welcome_message" name="welcome_message" placeholder="مرحباً بك! أنا مساعدك الذكي لبناء بوت احترافي لمشروعك. أخبرني ماذا تريد؟">
                 </div>
                 <div>
                     <label>أزرار تيليجرام السريعة (JSON Array - اختياري):</label>
-                    <input type="text" id="quick_buttons" name="quick_buttons" value='["📦 المنتجات والأسعار", "📍 العنوان والتوصيل"]'>
+                    <input type="text" id="quick_buttons" name="quick_buttons" value='["🤖 أريد بوت لمتجري", "🏢 أريد بوت لشركتي"]'>
                 </div>
             </div>
 
             <label>شخصية وتعليمات البوت (System Prompt):</label>
-            <textarea id="prompt" name="prompt" rows="4" placeholder="اكتب تعليمات البوت وكيفية الرد وجمع بيانات العملاء..." required></textarea>
+            <textarea id="prompt" name="prompt" rows="4" placeholder="أنت مستشار ذكي لخدمة العملاء وبناء البوتات الذكية. قدّم نفسك باختصار واسأل العميل عن مشروعه والمتطلبات التي يريدها في البوت..." required></textarea>
 
             <div class="grid-2">
                 <div>
@@ -721,12 +841,13 @@ DASHBOARD_HTML = """
     function resetForm() {
         document.getElementById('botForm').reset();
         document.getElementById('auto_replies').value = '{}';
-        document.getElementById('quick_buttons').value = '["📦 المنتجات والأسعار", "📍 العنوان والتوصيل"]';
+        document.getElementById('quick_buttons').value = '["🤖 أريد بوت لمتجري", "🏢 أريد بوت لشركتي"]';
         updateLabels();
     }
 
     function showWebSnippet(siteId) {
         const baseUrl = window.location.origin;
+        const endScript = "</" + "script>";
         const code = `<div id="omnibot-box" style="position:fixed;bottom:20px;left:20px;z-index:9999;background:#0f172a;color:#fff;padding:14px;border-radius:12px;border:1px solid #38bdf8;width:290px;font-family:sans-serif;">
   <div style="font-weight:bold;margin-bottom:8px;">💬 المساعد الذكي</div>
   <div id="omnibot-log" style="max-height:170px;overflow-y:auto;font-size:13px;margin-bottom:8px;"></div>
@@ -751,7 +872,7 @@ async function sendOmniMsg() {
   log.innerHTML += "<div style='color:#38bdf8;'><b>البوت:</b> " + (d.reply || "") + "</div>";
   log.scrollTop = log.scrollHeight;
 }
-` + `</scr` + `ipt>`;
+${endScript}`;
         document.getElementById('webCodeBox').textContent = code;
         document.getElementById('webModal').style.display = 'block';
     }
@@ -778,17 +899,17 @@ async function sendOmniMsg() {
             const sub = document.getElementById('liveBannerSub');
             if (unread > 0) {
                 banner.classList.add('has-unread');
-                title.textContent = `🔔 تنبيه: لديك ${unread} إشعار/رسالة جديدة غير مقروءة وصلتك!`;
+                title.textContent = `🔔 تنبيه: لديك ${unread} طلب/إشعار جديد مكتمل البيانات!`;
                 if (data.latest) {
-                    sub.textContent = `آخر إشعار من (${data.latest.client_name} - ${data.latest.platform}): ${data.latest.message_text}`;
+                    sub.textContent = `آخر طلب من (${data.latest.client_name}): ${data.latest.message_text.slice(0, 90)}...`;
                 }
                 if (unread > lastKnownUnread) {
                     lastKnownUnread = unread;
                 }
             } else {
                 banner.classList.remove('has-unread');
-                title.textContent = '✅ مركز الإشعارات نشط — لا توجد إشعارات جديدة غير مقروءة حالياً.';
-                sub.textContent = 'يتم فحص وصول الإشعارات الجديدة تلقائياً كل 10 ثوانٍ.';
+                title.textContent = '✅ مركز الطلبات نشط — لن تصلك إلا البيانات الكاملة الجاهزة لصناعة البوت.';
+                sub.textContent = 'يتم فحص الطلبات الجديدة تلقائياً كل 10 ثوانٍ.';
                 lastKnownUnread = 0;
             }
         } catch (e) {}
@@ -881,7 +1002,7 @@ def admin_mark_read():
         logger.error(f"Error marking leads read: {e}")
     finally:
         release_db_connection(conn)
-    return redirect(url_for("admin_dashboard", msg="تم تحديد جميع الإشعارات كمقروءة."))
+    return redirect(url_for("admin_dashboard", msg="تم تحديد جميع الطلبات كمقروءة."))
 
 
 @app.route("/admin/test-alert", methods=["POST"])
@@ -889,28 +1010,31 @@ def admin_test_alert():
     if not is_authorized():
         return "غير مصرح", 403
 
+    sample_report = (
+        "📋 طلب صناعة بوت كامل (تجريبي):\n"
+        "• الاسم / المشروع: اختبار النظام\n"
+        "• وسيلة التواصل: لوحة الأدمن\n"
+        "• نوع النشاط: تجربة الإشعارات\n"
+        "• المنصة المطلوبة: Telegram\n"
+        "• المهام والتعليمات المطلوبة: التأكد من وصول التقرير النهائي فقط."
+    )
     save_lead(
         "system_test",
         "اختبار المنصة",
         "admin_test",
         ADMIN_CHAT_ID or "admin",
         "لوحة التحكم",
-        "🔔 إشعار تجريبي: نظام التنبيهات يعمل بنجاح في لوحة الأدمن."
+        sample_report
     )
 
-    tg_token = ALERT_BOT_TOKEN
     sent_tg = False
-    if tg_token and ADMIN_CHAT_ID:
-        sent_tg = send_to_chat_id(
-            tg_token,
-            ADMIN_CHAT_ID,
-            "🔔 إشعار تجريبي من OmniBot SaaS: تم التحقق من وصول التنبيهات إلى تيليجرام بنجاح."
-        )
+    if ALERT_BOT_TOKEN and ADMIN_CHAT_ID:
+        sent_tg = send_to_chat_id(ALERT_BOT_TOKEN, ADMIN_CHAT_ID, sample_report)
 
     if sent_tg:
-        msg = "✅ تم إرسال الإشعار التجريبي إلى صفحة الأدمن وإلى تيليجرام بنجاح!"
+        msg = "✅ تم إرسال التقرير التجريبي إلى صفحة الأدمن وإلى تيليجرام بنجاح!"
     else:
-        msg = "⚠️ تم تسجيل الإشعار في صفحة الأدمن؛ تحقق من ضبط ALERT_BOT_TOKEN وADMIN_CHAT_ID والضغط على Start في البوت لإرسال تيليجرام."
+        msg = "⚠️ تم تسجيل الإشعار في صفحة الأدمن؛ تحقق من ضبط ALERT_BOT_TOKEN وADMIN_CHAT_ID لإرسال تيليجرام."
 
     return redirect(url_for("admin_dashboard", msg=msg))
 
@@ -945,7 +1069,7 @@ def admin_export_leads():
     return Response(
         output.getvalue(),
         mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=omnibot_notifications_leads.csv"}
+        headers={"Content-Disposition": "attachment; filename=omnibot_extracted_leads.csv"}
     )
 
 
@@ -1038,7 +1162,6 @@ def admin_dashboard():
     conn = None
     clients = []
     leads = []
-    total_messages = 0
     unread_count = 0
     try:
         conn = get_db_connection()
@@ -1052,10 +1175,6 @@ def admin_dashboard():
         cur.execute("SELECT COUNT(*) AS cnt FROM leads WHERE is_read = FALSE")
         r_unread = cur.fetchone()
         unread_count = r_unread["cnt"] if r_unread else 0
-
-        cur.execute("SELECT COUNT(*) AS cnt FROM chat_history")
-        r_msgs = cur.fetchone()
-        total_messages = r_msgs["cnt"] if r_msgs else 0
         cur.close()
     except Exception as e:
         logger.error(f"Dashboard load error: {e}")
@@ -1069,8 +1188,8 @@ def admin_dashboard():
         clients=clients,
         leads=leads,
         active_count=active_count,
-        total_messages=total_messages,
         unread_count=unread_count,
+        demo_limit=DEMO_QUESTION_LIMIT,
         msg=msg
     )
 
@@ -1137,27 +1256,6 @@ def admin_delete():
     return redirect(url_for("admin_dashboard", msg="🗑️ تم حذف البوت وسجله بنجاح."))
 
 
-@app.route("/admin/clear-leads", methods=["POST"])
-def admin_clear_leads():
-    if not is_authorized():
-        return "غير مصرح", 403
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM leads")
-        conn.commit()
-        cur.close()
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        logger.error(f"Clear leads error: {e}")
-    finally:
-        release_db_connection(conn)
-
-    return redirect(url_for("admin_dashboard", msg="🧹 تم مسح سجل الإشعارات والرسائل."))
-
-
 # ================= 1. قناة تيليجرام =================
 @app.route("/webhook/<bot_token>", methods=["POST"])
 def telegram_webhook(bot_token):
@@ -1183,28 +1281,38 @@ def telegram_webhook(bot_token):
     sender_label = f"{sender_name} ({sender_user})"
 
     if user_text == "/start":
-        welcome = client_data.get("welcome_message") or f"أهلاً بك في {client_data['client_name']}! اختر من الأزرار أو اكتب سؤالك:"
+        welcome = client_data.get("welcome_message") or (
+            f"أهلاً بك في {client_data['client_name']}! 👋\n"
+            f"أنا مساعدك الذكي المتخصص في تصميم البوتات الذكية للأعمال.\n"
+            f"لديك {DEMO_QUESTION_LIMIT} رسائل في هذه الجلسة التجريبية؛ أخبرني ما هو مشروعك وما الذي تريده في البوت الخاص بك؟"
+        )
         bot.send_message(chat_id, welcome, reply_markup=markup)
         return "OK", 200
 
     if user_text == "🔄 محادثة جديدة":
-        clear_user_history(bot_token, chat_id)
-        bot.send_message(chat_id, "تم بدء محادثة جديدة. كيف يمكنني مساعدتك؟", reply_markup=markup)
+        clear_user_context_keep_quota(bot_token, chat_id)
+        bot.send_message(chat_id, "تم تجديد سياق المحادثة. تفضل بطرح تفاصيل مشروعك:", reply_markup=markup)
         return "OK", 200
 
-    is_urgent = (user_text == "📞 تواصل مع موظف")
-    handle_incoming_notification(client_data, "telegram", chat_id, sender_label, user_text, is_urgent=is_urgent)
-
-    if is_urgent:
+    if user_text == "📞 تواصل مع موظف":
+        handle_incoming_notification(
+            client_data,
+            "telegram",
+            chat_id,
+            sender_label,
+            "📞 طلب تواصل مباشر: العميل ضغط على زر (تواصل مع موظف).",
+            is_urgent=True
+        )
         bot.send_message(
             chat_id,
-            "تم إرسال طلب تواصلك بنجاح إلى فريق الإدارة. سيتواصل معك المختص في أقرب وقت.",
+            "تم إرسال طلب تواصلك بنجاح. سيتواصل معك المختص في أقرب وقت.",
             reply_markup=markup
         )
         return "OK", 200
 
+    # لا نرسل أي إشعار على الكلام العادي؛ نرسل فقط عند اكتمال البيانات داخل generate_ai_reply
     bot.send_chat_action(chat_id, "typing")
-    reply_text = generate_ai_reply(client_data, chat_id, user_text)
+    reply_text = generate_ai_reply(client_data, chat_id, user_text, platform="telegram", sender_label=sender_label)
     bot.send_message(chat_id, reply_text, reply_markup=markup)
     return "OK", 200
 
@@ -1235,8 +1343,10 @@ def whatsapp_webhook():
 
                         client_data = get_client(phone_number_id)
                         if client_data and client_data.get("is_active") and client_data.get("extra_token"):
-                            handle_incoming_notification(client_data, "whatsapp", sender_phone, "WhatsApp User", user_text)
-                            reply_text = generate_ai_reply(client_data, sender_phone, user_text)
+                            reply_text = generate_ai_reply(
+                                client_data, sender_phone, user_text,
+                                platform="whatsapp", sender_label=f"WhatsApp ({sender_phone})"
+                            )
                             wa_url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
                             headers = {
                                 "Authorization": f"Bearer {client_data['extra_token']}",
@@ -1278,8 +1388,10 @@ def instagram_webhook():
                 if sender_id and user_text and ig_id:
                     client_data = get_client(ig_id)
                     if client_data and client_data.get("is_active") and client_data.get("extra_token"):
-                        handle_incoming_notification(client_data, "instagram", sender_id, "Instagram User", user_text)
-                        reply_text = generate_ai_reply(client_data, sender_id, user_text)
+                        reply_text = generate_ai_reply(
+                            client_data, sender_id, user_text,
+                            platform="instagram", sender_label=f"Instagram ({sender_id})"
+                        )
                         ig_url = f"https://graph.facebook.com/v18.0/{ig_id}/messages"
                         headers = {
                             "Authorization": f"Bearer {client_data['extra_token']}",
@@ -1310,11 +1422,14 @@ def webchat_api(site_id):
     if not user_text:
         return jsonify({"error": "Empty message"}), 400
 
-    handle_incoming_notification(client_data, "web", session_id, "زائر الموقع", user_text)
-    reply_text = generate_ai_reply(client_data, session_id, user_text)
+    reply_text = generate_ai_reply(
+        client_data, session_id, user_text,
+        platform="web", sender_label=f"زائر الموقع ({session_id})"
+    )
     return jsonify({"reply": reply_text}), 200
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+       
