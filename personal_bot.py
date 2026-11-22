@@ -751,7 +751,7 @@ async function sendOmniMsg() {
   log.innerHTML += "<div style='color:#38bdf8;'><b>البوت:</b> " + (d.reply || "") + "</div>";
   log.scrollTop = log.scrollHeight;
 }
-<\/script>`;
+` + `</scr` + `ipt>`;
         document.getElementById('webCodeBox').textContent = code;
         document.getElementById('webModal').style.display = 'block';
     }
