@@ -155,6 +155,16 @@ def init_db():
         """)
         cur.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE;")
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS client_portal_tokens (
+                id SERIAL PRIMARY KEY,
+                bot_token TEXT NOT NULL,
+                access_token TEXT UNIQUE NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
         cur.close()
         logger.info("Database schema ready.")
@@ -311,6 +321,83 @@ def save_lead(bot_token, client_name, platform, sender_chat_id, sender_label, me
         release_db_connection(conn)
 
 
+# --- دوال إدارة رموز دخول بوابة العميل ---
+def issue_client_portal_token(bot_token):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "UPDATE client_portal_tokens SET is_active = FALSE WHERE bot_token = %s AND is_active = TRUE",
+            (str(bot_token),)
+        )
+        new_token = secrets.token_urlsafe(24)
+        cur.execute(
+            "INSERT INTO client_portal_tokens (bot_token, access_token, is_active) VALUES (%s, %s, TRUE)",
+            (str(bot_token), new_token)
+        )
+        conn.commit()
+        cur.close()
+        return new_token
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Error issuing client portal token: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def get_active_client_portal_tokens_map():
+    conn = None
+    mapping = {}
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT bot_token, access_token FROM client_portal_tokens WHERE is_active = TRUE ORDER BY id DESC")
+        for row in cur.fetchall():
+            bt = str(row["bot_token"])
+            if bt not in mapping:
+                mapping[bt] = row["access_token"]
+        cur.close()
+    except Exception as e:
+        logger.error(f"Error loading portal tokens map: {e}")
+    finally:
+        release_db_connection(conn)
+    return mapping
+
+
+def validate_portal_access_token(access_token):
+    if not access_token:
+        return None
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT t.bot_token, c.client_name, c.platform, c.is_active AS bot_active
+            FROM client_portal_tokens t
+            JOIN clients c ON c.bot_token = t.bot_token
+            WHERE t.access_token = %s AND t.is_active = TRUE
+        """, (str(access_token).strip(),))
+        row = cur.fetchone()
+        cur.close()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Error validating portal token: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def get_authorized_client_bot_token():
+    """يرجع bot_token الخاص بالعميل المسجل فقط إذا كانت الجلسة مخصصة لبوابة العميل."""
+    if session.get("portal_role") != "client":
+        return None
+    bt = session.get("client_bot_token")
+    return str(bt).strip() if bt else None
+
+
 # --- دالة الإرسال إلى chat_id ---
 def send_to_chat_id(bot_token, target_chat_id, text):
     if not bot_token or not target_chat_id:
@@ -340,11 +427,11 @@ def notify_telegram_target(client_data, platform, sender_id, sender_label, user_
     if not alert_token:
         return False
 
-    badge = "✅ تم استخراج بيانات عميل كاملة لصناعة بوت" if is_urgent else "🔔 إشعار جديد"
+    badge = "✅ تم استخراج بيانات عميل كاملة" if is_urgent else "🔔 إشعار جديد"
     msg = (
         f"{badge} ({str(platform).upper()})\n"
         f"• المصدر: {client_data['client_name']}\n"
-        f"• حساب العميل: {sender_label}\n"
+        f"• حساب المرسل: {sender_label}\n"
         f"• المعرف: {sender_id}\n"
         f"-------------------------\n"
         f"{user_text}"
@@ -420,24 +507,20 @@ def extract_and_notify_lead(client_data, platform, sender_id, sender_label, ai_r
 def generate_ai_reply(client_data, chat_id, user_text, platform="telegram", sender_label="عميل"):
     bot_id = client_data["bot_token"]
 
-    # 1. فحص حد الأسئلة التجريبية قبل استهلاك أي نقطة من Claude API
     if DEMO_QUESTION_LIMIT > 0:
         used_questions = count_user_questions(bot_id, chat_id)
         if used_questions >= DEMO_QUESTION_LIMIT:
             return DEMO_LIMIT_MESSAGE
 
-    # 2. حفظ رسالة العميل واحتسابها ضمن حصته
     save_message(bot_id, chat_id, "user", user_text)
     used_now = count_user_questions(bot_id, chat_id)
     remaining = max(0, DEMO_QUESTION_LIMIT - used_now)
 
-    # 3. الردود التلقائية بالكلمات المفتاحية (بدون استهلاك API)
     auto_msg = match_auto_reply(client_data, user_text)
     if auto_msg:
         save_message(bot_id, chat_id, "assistant", auto_msg)
         return auto_msg
 
-    # 4. استدعاء Claude API مع دمج قواعد جمع البيانات
     history = get_chat_history(bot_id, chat_id, limit=14)
     api_key = (client_data.get("anthropic_key") or "").strip() or DEFAULT_ANTHROPIC_KEY
     if not api_key:
@@ -470,12 +553,14 @@ def generate_ai_reply(client_data, chat_id, user_text, platform="telegram", send
         return "عذراً، حدث خطأ تقني مؤقت. يرجى المحاولة مرة أخرى."
 
 
-def is_authorized():
+def is_admin_authorized():
     if not ADMIN_SECRET:
         return False
-    if session.get("is_admin"):
+    if session.get("portal_role") == "admin" and session.get("is_admin"):
         return True
     if request.args.get("secret", "") == ADMIN_SECRET or request.headers.get("X-Admin-Secret", "") == ADMIN_SECRET:
+        session.clear()
+        session["portal_role"] = "admin"
         session["is_admin"] = True
         return True
     return False
@@ -491,7 +576,7 @@ def set_tg_webhook(bot_token, host_url):
     return res.json()
 
 
-# ================= واجهة لوحة التحكم الشاملة =================
+# ================= واجهة لوحة تحكم الأدمن =================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -543,14 +628,15 @@ DASHBOARD_HTML = """
         .modal-content { background: var(--card); margin: 8% auto; padding: 22px; border: 1px solid var(--border); width: 90%; max-width: 660px; border-radius: 12px; }
         pre { background: #0f172a; padding: 12px; border-radius: 8px; overflow-x: auto; direction: ltr; text-align: left; color: #38bdf8; font-size: 12px; }
         .lead-text { white-space: pre-line; line-height: 1.6; }
+        .portal-link-box { background: #0f172a; border: 1px dashed #38bdf8; padding: 10px 12px; border-radius: 8px; direction: ltr; text-align: left; font-family: monospace; font-size: 12px; color: #7dd3fc; word-break: break-all; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="top-bar">
         <div>
-            <h1 style="margin:0; font-size: 21px;">🚀 OmniBot SaaS — لوحة الإدارة واستقبال الطلبات</h1>
-            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل لكل عميل | الإشعارات تصلك فقط بعد اكتمال البيانات</span>
+            <h1 style="margin:0; font-size: 21px;">🚀 OmniBot SaaS — لوحة القيادة واستقبال الطلبات</h1>
+            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل لكل عميل | بوابة إشعارات مستقلة للعملاء</span>
         </div>
         <div class="toolbar">
             <form method="POST" action="/admin/test-alert" style="margin:0;">
@@ -585,6 +671,15 @@ DASHBOARD_HTML = """
 
     {% if msg %}
     <div class="alert">{{ msg }}</div>
+    {% endif %}
+
+    {% if client_portal_url %}
+    <div class="card" style="border-color:#38bdf8;">
+        <h3>🔑 رابط دخول واجهة الإشعارات الخاص بالعميل</h3>
+        <p style="font-size:13px; color:#cbd5e1;">أرسل هذا الرابط للعميل فقط؛ سيعرض له إشعارات بوته وحده دون أي صلاحيات إدارية:</p>
+        <div class="portal-link-box" id="generatedPortalUrl">{{ client_portal_url }}</div>
+        <button type="button" class="btn btn-success" onclick="copyText('generatedPortalUrl')">📋 نسخ رابط العميل</button>
+    </div>
     {% endif %}
 
     <div class="stats-grid">
@@ -673,7 +768,7 @@ DASHBOARD_HTML = """
                 <div>
                     <label>معرف استقبال التنبيهات (Notify Chat ID - اختياري):</label>
                     <input type="text" id="notify_chat_id" name="notify_chat_id" placeholder="اتركه فارغاً لاستخدام ADMIN_CHAT_ID">
-                    <div class="hint">رقم Chat ID الخاص بك لإرسال ملخص بيانات العميل إليه عبر تيليجرام.</div>
+                    <div class="hint">رقم Chat ID الخاص بك أو الخاص بالعميل لإرسال التنبيهات إليه عبر تيليجرام.</div>
                 </div>
             </div>
 
@@ -720,18 +815,25 @@ DASHBOARD_HTML = """
                     <th>المشروع</th>
                     <th>القناة</th>
                     <th>المعرف / التوكن</th>
-                    <th>Notify Chat ID</th>
+                    <th>بوابة العميل</th>
                     <th>الحالة</th>
                     <th>أزرار التحكم</th>
                 </tr>
             </thead>
             <tbody>
                 {% for c in clients %}
+                {% set p_tok = portal_tokens_map.get(c.bot_token) %}
                 <tr>
                     <td><strong>{{ c.client_name }}</strong></td>
                     <td><span class="plat-badge">{{ (c.platform or 'telegram')|upper }}</span></td>
                     <td style="font-family: monospace; font-size: 12px;">{{ c.bot_token[:16] }}...</td>
-                    <td style="font-family: monospace; font-size: 12px;">{{ c.notify_chat_id or 'ADMIN الافتراضي' }}</td>
+                    <td>
+                        {% if p_tok %}
+                        <span class="badge active">مفعّلة</span>
+                        {% else %}
+                        <span class="badge read-badge">غير مُصدرة</span>
+                        {% endif %}
+                    </td>
                     <td>
                         {% if c.is_active %}
                         <span class="badge active">🟢 نشط</span>
@@ -741,6 +843,11 @@ DASHBOARD_HTML = """
                     </td>
                     <td>
                         <div class="actions-cell">
+                            <form method="POST" action="/admin/issue-client-portal" style="margin:0;">
+                                <input type="hidden" name="token" value="{{ c.bot_token }}">
+                                <button type="submit" class="btn btn-purple">🔑 رابط العميل</button>
+                            </form>
+
                             <button type="button" class="btn btn-warn"
                                 data-name="{{ c.client_name|e }}"
                                 data-token="{{ c.bot_token|e }}"
@@ -767,7 +874,7 @@ DASHBOARD_HTML = """
                             {% if (c.platform or 'telegram') == 'telegram' %}
                             <form method="POST" action="/admin/rehook" style="margin:0;">
                                 <input type="hidden" name="token" value="{{ c.bot_token }}">
-                                <button type="submit" class="btn btn-purple">🔗 ربط</button>
+                                <button type="submit" class="btn">🔗 ربط</button>
                             </form>
                             {% endif %}
 
@@ -843,6 +950,13 @@ DASHBOARD_HTML = """
         document.getElementById('auto_replies').value = '{}';
         document.getElementById('quick_buttons').value = '["🤖 أريد بوت لمتجري", "🏢 أريد بوت لشركتي"]';
         updateLabels();
+    }
+
+    function copyText(elementId) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        navigator.clipboard.writeText(el.textContent.trim());
+        alert('تم النسخ بنجاح!');
     }
 
     function showWebSnippet(siteId) {
@@ -922,6 +1036,174 @@ ${endScript}`;
 """
 
 
+# ================= واجهة إشعارات العميل المخصصة والمعزولة =================
+CLIENT_PORTAL_HTML = """
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إشعارات الزبائن — {{ client_name }}</title>
+    <style>
+        :root { --bg: #0b1120; --card: #1e293b; --border: #334155; --primary: #0284c7; --accent: #38bdf8; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: #f8fafc; margin: 0; padding: 18px; }
+        .container { max-width: 1100px; margin: auto; }
+        h1, h2 { color: var(--accent); margin-top: 0; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; background: var(--card); padding: 16px 20px; border-radius: 12px; border: 1px solid var(--border); }
+        .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .live-banner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: linear-gradient(90deg, #172554, #1e293b); border: 1px solid #38bdf8; padding: 14px 18px; border-radius: 12px; margin-bottom: 18px; }
+        .live-banner.has-unread { background: linear-gradient(90deg, #7c2d12, #1e293b); border-color: #fb923c; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 20px; }
+        .stat-box { background: var(--card); padding: 16px; border-radius: 12px; border-right: 4px solid var(--accent); border-top: 1px solid var(--border); }
+        .stat-num { font-size: 24px; font-weight: bold; color: #fff; }
+        .stat-label { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+        .card { background: var(--card); padding: 20px; border-radius: 12px; margin-bottom: 22px; border: 1px solid var(--border); }
+        .btn { background: var(--primary); color: white; border: none; padding: 9px 14px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+        .btn-success { background: #16a34a; }
+        .btn-warn { background: #d97706; }
+        .btn-danger { background: #dc2626; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 11px; text-align: right; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 13px; }
+        th { color: #94a3b8; background: #0f172a; }
+        tr.unread-row { background: rgba(251, 146, 60, 0.14); }
+        .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        .active { background: #14532d; color: #4ade80; }
+        .inactive { background: #7f1d1d; color: #f87171; }
+        .unread-badge { background: #ea580c; color: #fff; }
+        .read-badge { background: #334155; color: #cbd5e1; }
+        .plat-badge { background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        .alert { background: #065f46; color: #a7f3d0; padding: 12px 15px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #10b981; }
+        .lead-text { white-space: pre-line; line-height: 1.6; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="top-bar">
+        <div>
+            <h1 style="margin:0; font-size: 20px;">📬 إشعارات الزبائن — {{ client_name }}</h1>
+            <span style="font-size: 12px; color: #94a3b8;">واجهة متابعة مخصصة لبوتك فقط — القناة: {{ (platform or 'telegram')|upper }}</span>
+        </div>
+        <div class="toolbar">
+            <a href="/client/export-leads" class="btn btn-success">📥 تصدير CSV</a>
+            <a href="/client/logout" class="btn btn-danger">🚪 خروج</a>
+        </div>
+    </div>
+
+    <div id="clientLiveBanner" class="live-banner {% if unread_count > 0 %}has-unread{% endif %}">
+        <div>
+            <strong id="clientBannerTitle">
+                {% if unread_count > 0 %}
+                    🔔 لديك {{ unread_count }} إشعار/طلب جديد من زبائنك!
+                {% else %}
+                    ✅ لا توجد إشعارات جديدة غير مقروءة حالياً.
+                {% endif %}
+            </strong>
+            <div id="clientBannerSub" style="font-size:12px; color:#cbd5e1; margin-top:3px;">
+                يتم التحديث تلقائياً كل 10 ثوانٍ.
+            </div>
+        </div>
+        <div class="toolbar">
+            <form method="POST" action="/client/mark-read" style="margin:0;">
+                <button type="submit" class="btn btn-warn">✔️ تحديد الكل كمقروء</button>
+            </form>
+            <button type="button" class="btn" onclick="location.reload()">🔄 تحديث الآن</button>
+        </div>
+    </div>
+
+    {% if msg %}
+    <div class="alert">{{ msg }}</div>
+    {% endif %}
+
+    <div class="stats-grid">
+        <div class="stat-box">
+            <div class="stat-num" id="clientStatUnread">{{ unread_count }}</div>
+            <div class="stat-label">🔔 إشعارات جديدة</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-num">{{ leads|length }}</div>
+            <div class="stat-label">📋 إجمالي الإشعارات المسجلة</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-num">
+                {% if is_active %}
+                <span class="badge active">🟢 البوت نشط</span>
+                {% else %}
+                <span class="badge inactive">🔴 البوت متوقف</span>
+                {% endif %}
+            </div>
+            <div class="stat-label">حالة تشغيل البوت</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📋 سجل إشعارات وطلبات الزبائن</h2>
+        <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>الحالة</th>
+                    <th>القناة</th>
+                    <th>المرسل</th>
+                    <th>تفاصيل الإشعار / الطلب</th>
+                    <th>التوقيت</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for l in leads %}
+                <tr class="{% if not l.is_read %}unread-row{% endif %}">
+                    <td>
+                        {% if not l.is_read %}
+                        <span class="badge unread-badge">🆕 جديد</span>
+                        {% else %}
+                        <span class="badge read-badge">مقروء</span>
+                        {% endif %}
+                    </td>
+                    <td><span class="plat-badge">{{ (l.platform or 'telegram')|upper }}</span></td>
+                    <td style="font-size:12px;">{{ l.sender_label or 'زبون' }}<br><code>{{ l.sender_chat_id }}</code></td>
+                    <td class="lead-text">{{ l.message_text }}</td>
+                    <td style="font-size:12px; color:#94a3b8;">{{ l.created_at }}</td>
+                </tr>
+                {% endfor %}
+                {% if leads|length == 0 %}
+                <tr><td colspan="5" style="text-align:center; color:#94a3b8;">لا توجد إشعارات مسجلة لبوتك حتى الآن.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    async function pollClientNotifications() {
+        try {
+            const res = await fetch('/client/notifications-status');
+            if (!res.ok) return;
+            const data = await res.json();
+            const unread = Number(data.unread_count || 0);
+            document.getElementById('clientStatUnread').textContent = unread;
+            const banner = document.getElementById('clientLiveBanner');
+            const title = document.getElementById('clientBannerTitle');
+            const sub = document.getElementById('clientBannerSub');
+            if (unread > 0) {
+                banner.classList.add('has-unread');
+                title.textContent = `🔔 لديك ${unread} إشعار/طلب جديد من زبائنك!`;
+                if (data.latest) {
+                    sub.textContent = `آخر إشعار: ${data.latest.message_text.slice(0, 95)}...`;
+                }
+            } else {
+                banner.classList.remove('has-unread');
+                title.textContent = '✅ لا توجد إشعارات جديدة غير مقروءة حالياً.';
+                sub.textContent = 'يتم التحديث تلقائياً كل 10 ثوانٍ.';
+            }
+        } catch (e) {}
+    }
+    setInterval(pollClientNotifications, 10000);
+</script>
+</body>
+</html>
+"""
+
+
 # ================= مسارات النظام والإدارة =================
 @app.route("/", methods=["GET"])
 def index():
@@ -936,6 +1218,8 @@ def admin_login():
     if request.method == "POST":
         entered_secret = request.form.get("secret", "").strip()
         if entered_secret == ADMIN_SECRET:
+            session.clear()
+            session["portal_role"] = "admin"
             session["is_admin"] = True
             return redirect(url_for("admin_dashboard"))
         error = "رمز الدخول غير صحيح."
@@ -961,7 +1245,7 @@ def admin_logout():
 
 @app.route("/admin/notifications-status", methods=["GET"])
 def admin_notifications_status():
-    if not is_authorized():
+    if not is_admin_authorized():
         return jsonify({"error": "unauthorized"}), 403
     conn = None
     try:
@@ -987,7 +1271,7 @@ def admin_notifications_status():
 
 @app.route("/admin/mark-read", methods=["POST"])
 def admin_mark_read():
-    if not is_authorized():
+    if not is_admin_authorized():
         return "غير مصرح", 403
     conn = None
     try:
@@ -1007,7 +1291,7 @@ def admin_mark_read():
 
 @app.route("/admin/test-alert", methods=["POST"])
 def admin_test_alert():
-    if not is_authorized():
+    if not is_admin_authorized():
         return "غير مصرح", 403
 
     sample_report = (
@@ -1041,7 +1325,7 @@ def admin_test_alert():
 
 @app.route("/admin/export-leads", methods=["GET"])
 def admin_export_leads():
-    if not is_authorized():
+    if not is_admin_authorized():
         return "غير مصرح", 403
 
     conn = None
@@ -1073,12 +1357,30 @@ def admin_export_leads():
     )
 
 
+@app.route("/admin/issue-client-portal", methods=["POST"])
+def admin_issue_client_portal():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    bot_token = request.form.get("token", "").strip()
+    if not bot_token or not get_client(bot_token):
+        return redirect(url_for("admin_dashboard", msg="⚠️ تعذر العثور على البوت لتوليد رابط العميل."))
+
+    access_tok = issue_client_portal_token(bot_token)
+    if not access_tok:
+        return redirect(url_for("admin_dashboard", msg="❌ فشل إنشاء رمز دخول للعميل."))
+
+    host_url = request.host_url.rstrip("/").replace("http://", "https://")
+    portal_url = f"{host_url}/client/login/{access_tok}"
+    return redirect(url_for("admin_dashboard", msg="✅ تم إصدار رابط دخول خاص ومستقل للعميل.", portal_url=portal_url))
+
+
 @app.route("/admin", methods=["GET", "POST"])
 def admin_dashboard():
-    if not is_authorized():
+    if not is_admin_authorized():
         return redirect(url_for("admin_login"))
 
     msg = request.args.get("msg", "")
+    client_portal_url = request.args.get("portal_url", "")
 
     if request.method == "POST":
         platform = request.form.get("platform", "telegram").strip()
@@ -1182,6 +1484,7 @@ def admin_dashboard():
         release_db_connection(conn)
 
     active_count = sum(1 for c in clients if c.get("is_active"))
+    portal_tokens_map = get_active_client_portal_tokens_map()
 
     return render_template_string(
         DASHBOARD_HTML,
@@ -1190,13 +1493,15 @@ def admin_dashboard():
         active_count=active_count,
         unread_count=unread_count,
         demo_limit=DEMO_QUESTION_LIMIT,
+        portal_tokens_map=portal_tokens_map,
+        client_portal_url=client_portal_url,
         msg=msg
     )
 
 
 @app.route("/admin/toggle", methods=["POST"])
 def admin_toggle():
-    if not is_authorized():
+    if not is_admin_authorized():
         return "غير مصرح", 403
     token = request.form.get("token", "").strip()
     state = request.form.get("active", "true").lower() == "true"
@@ -1221,7 +1526,7 @@ def admin_toggle():
 
 @app.route("/admin/rehook", methods=["POST"])
 def admin_rehook():
-    if not is_authorized():
+    if not is_admin_authorized():
         return "غير مصرح", 403
     token = request.form.get("token", "").strip()
     host_url = request.host_url.rstrip("/").replace("http://", "https://")
@@ -1233,7 +1538,7 @@ def admin_rehook():
 
 @app.route("/admin/delete", methods=["POST"])
 def admin_delete():
-    if not is_authorized():
+    if not is_admin_authorized():
         return "غير مصرح", 403
     token = request.form.get("token", "").strip()
 
@@ -1243,6 +1548,7 @@ def admin_delete():
         cur = conn.cursor()
         cur.execute("DELETE FROM chat_history WHERE bot_token = %s", (token,))
         cur.execute("DELETE FROM leads WHERE bot_token = %s", (token,))
+        cur.execute("DELETE FROM client_portal_tokens WHERE bot_token = %s", (token,))
         cur.execute("DELETE FROM clients WHERE bot_token = %s", (token,))
         conn.commit()
         cur.close()
@@ -1254,6 +1560,169 @@ def admin_delete():
         release_db_connection(conn)
 
     return redirect(url_for("admin_dashboard", msg="🗑️ تم حذف البوت وسجله بنجاح."))
+
+
+# ================= مسارات بوابة العميل المعزولة =================
+@app.route("/client/login/<access_token>", methods=["GET"])
+def client_portal_login(access_token):
+    info = validate_portal_access_token(access_token)
+    if not info:
+        return "رابط الدخول غير صالح أو تم إبطاله.", 403
+
+    session.clear()
+    session["portal_role"] = "client"
+    session["client_bot_token"] = info["bot_token"]
+    return redirect(url_for("client_portal_dashboard"))
+
+
+@app.route("/client/logout", methods=["GET"])
+def client_portal_logout():
+    session.clear()
+    return "تم تسجيل الخروج من واجهة الإشعارات بنجاح.", 200
+
+
+@app.route("/client/dashboard", methods=["GET"])
+def client_portal_dashboard():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return "غير مصرح بالدخول. يرجى استخدام رابط الدخول الخاص بحسابك.", 403
+
+    client_info = get_client(bot_token)
+    if not client_info:
+        return "حساب البوت غير موجود.", 404
+
+    msg = request.args.get("msg", "")
+    conn = None
+    leads = []
+    unread_count = 0
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT * FROM leads WHERE bot_token = %s ORDER BY id DESC LIMIT 100",
+            (bot_token,)
+        )
+        leads = cur.fetchall()
+
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM leads WHERE bot_token = %s AND is_read = FALSE",
+            (bot_token,)
+        )
+        r_unread = cur.fetchone()
+        unread_count = r_unread["cnt"] if r_unread else 0
+        cur.close()
+    except Exception as e:
+        logger.error(f"Client portal load error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return render_template_string(
+        CLIENT_PORTAL_HTML,
+        client_name=client_info["client_name"],
+        platform=client_info.get("platform") or "telegram",
+        is_active=bool(client_info.get("is_active")),
+        leads=leads,
+        unread_count=unread_count,
+        msg=msg
+    )
+
+
+@app.route("/client/notifications-status", methods=["GET"])
+def client_notifications_status():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return jsonify({"error": "unauthorized"}), 403
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM leads WHERE bot_token = %s AND is_read = FALSE",
+            (bot_token,)
+        )
+        row_u = cur.fetchone()
+        unread_count = row_u["cnt"] if row_u else 0
+
+        cur.execute(
+            "SELECT platform, message_text, created_at FROM leads WHERE bot_token = %s ORDER BY id DESC LIMIT 1",
+            (bot_token,)
+        )
+        latest = cur.fetchone()
+        cur.close()
+        return jsonify({
+            "unread_count": unread_count,
+            "latest": dict(latest) if latest else None
+        })
+    except Exception as e:
+        logger.error(f"Error fetching client notification status: {e}")
+        return jsonify({"unread_count": 0, "latest": None})
+    finally:
+        release_db_connection(conn)
+
+
+@app.route("/client/mark-read", methods=["POST"])
+def client_mark_read():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return "غير مصرح", 403
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE leads SET is_read = TRUE WHERE bot_token = %s AND is_read = FALSE",
+            (bot_token,)
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Error marking client leads read: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return redirect(url_for("client_portal_dashboard", msg="تم تحديد جميع إشعارات بوتك كمقروءة."))
+
+
+@app.route("/client/export-leads", methods=["GET"])
+def client_export_leads():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return "غير مصرح", 403
+
+    conn = None
+    rows = []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT id, platform, sender_chat_id, sender_label, message_text, is_read, created_at FROM leads WHERE bot_token = %s ORDER BY id DESC",
+            (bot_token,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        logger.error(f"Client export error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Platform", "Sender ID", "Sender Label", "Message", "Is Read", "Created At"])
+    for r in rows:
+        writer.writerow([
+            r["id"], r["platform"], r["sender_chat_id"],
+            r["sender_label"], r["message_text"], r["is_read"], r["created_at"]
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=client_bot_notifications.csv"}
+    )
 
 
 # ================= 1. قناة تيليجرام =================
@@ -1310,7 +1779,6 @@ def telegram_webhook(bot_token):
         )
         return "OK", 200
 
-    # لا نرسل أي إشعار على الكلام العادي؛ نرسل فقط عند اكتمال البيانات داخل generate_ai_reply
     bot.send_chat_action(chat_id, "typing")
     reply_text = generate_ai_reply(client_data, chat_id, user_text, platform="telegram", sender_label=sender_label)
     bot.send_message(chat_id, reply_text, reply_markup=markup)
@@ -1432,4 +1900,5 @@ def webchat_api(site_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-       
+
+
