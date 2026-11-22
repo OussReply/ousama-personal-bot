@@ -3,6 +3,9 @@ import re
 import io
 import csv
 import json
+import time
+import hmac
+import hashlib
 import secrets
 import logging
 import psycopg2
@@ -34,6 +37,93 @@ ALERT_BOT_TOKEN = os.environ.get("ALERT_BOT_TOKEN", "").strip()
 DEFAULT_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 META_VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "ousama_verify_2026")
+META_APP_SECRET = os.environ.get("META_APP_SECRET", "").strip()
+
+# --- إعدادات أمان الجلسات والكوكيز وعزل الأدمن عن العميل ---
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("FORCE_HTTPS", "1") == "1":
+    app.config["SESSION_COOKIE_SECURE"] = True
+
+app.config["ADMIN_SESSION_COOKIE_NAME"] = "omnibot_admin_session"
+app.config["CLIENT_SESSION_COOKIE_NAME"] = "omnibot_client_session"
+
+
+@app.before_request
+def isolate_session_cookie_by_route():
+    if request.path.startswith("/client"):
+        app.session_cookie_name = app.config["CLIENT_SESSION_COOKIE_NAME"]
+    else:
+        app.session_cookie_name = app.config["ADMIN_SESSION_COOKIE_NAME"]
+
+
+@app.after_request
+def apply_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+# --- حماية ضد التخمين والإغراق (Rate Limiting) ---
+_failed_admin_attempts = {}  # {ip: [timestamps]}
+_webchat_hits = {}          # {key: [timestamps]}
+
+ADMIN_MAX_FAILS = 5
+ADMIN_LOCK_SECONDS = 300      # 5 دقائق حظر مؤقت بعد 5 محاولات خاطئة
+WEBCHAT_MAX_PER_MIN = 20
+
+
+def get_client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def is_admin_ip_blocked(ip):
+    now = time.time()
+    attempts = [t for t in _failed_admin_attempts.get(ip, []) if now - t < ADMIN_LOCK_SECONDS]
+    _failed_admin_attempts[ip] = attempts
+    return len(attempts) >= ADMIN_MAX_FAILS
+
+
+def record_failed_admin_attempt(ip):
+    now = time.time()
+    attempts = [t for t in _failed_admin_attempts.get(ip, []) if now - t < ADMIN_LOCK_SECONDS]
+    attempts.append(now)
+    _failed_admin_attempts[ip] = attempts
+
+
+def clear_failed_admin_attempts(ip):
+    _failed_admin_attempts.pop(ip, None)
+
+
+def is_webchat_rate_limited(key):
+    now = time.time()
+    hits = [t for t in _webchat_hits.get(key, []) if now - t < 60]
+    if len(hits) >= WEBCHAT_MAX_PER_MIN:
+        _webchat_hits[key] = hits
+        return True
+    hits.append(now)
+    _webchat_hits[key] = hits
+    return False
+
+
+def verify_meta_signature(raw_body_bytes, signature_header):
+    """يتحقق من توقيع Meta HMAC SHA-256 إذا تم ضبط META_APP_SECRET."""
+    if not META_APP_SECRET:
+        return True
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected_sig = hmac.new(
+        META_APP_SECRET.encode("utf-8"),
+        raw_body_bytes,
+        hashlib.sha256
+    ).hexdigest()
+    received_sig = signature_header.split("=", 1)[1].strip()
+    return hmac.compare_digest(expected_sig, received_sig)
+
 
 # --- إعدادات حماية رصيد API للنسخة التجريبية ---
 DEMO_QUESTION_LIMIT = int(os.environ.get("DEMO_QUESTION_LIMIT", "10"))
@@ -390,9 +480,38 @@ def validate_portal_access_token(access_token):
         release_db_connection(conn)
 
 
+# --- عزل الجلسات والصلاحيات بين الأدمن والعميل ---
+def clear_admin_session_keys():
+    for k in ("admin_auth", "is_admin"):
+        session.pop(k, None)
+    if session.get("session_owner") == "admin":
+        session.pop("session_owner", None)
+
+
+def clear_client_session_keys():
+    for k in ("client_auth", "client_bot_token"):
+        session.pop(k, None)
+    if session.get("session_owner") == "client":
+        session.pop("session_owner", None)
+
+
+def is_admin_authorized():
+    if not ADMIN_SECRET:
+        return False
+    if session.get("session_owner") == "admin" and session.get("admin_auth") is True:
+        return True
+    req_secret = request.args.get("secret", "") or request.headers.get("X-Admin-Secret", "")
+    if req_secret and hmac.compare_digest(req_secret, ADMIN_SECRET):
+        clear_client_session_keys()
+        session["session_owner"] = "admin"
+        session["admin_auth"] = True
+        return True
+    return False
+
+
 def get_authorized_client_bot_token():
-    """يرجع bot_token الخاص بالعميل المسجل فقط إذا كانت الجلسة مخصصة لبوابة العميل."""
-    if session.get("portal_role") != "client":
+    """يرجع bot_token الخاص بالعميل فقط إذا كانت الجلسة مخصصة حصراً لدور client."""
+    if session.get("session_owner") != "client" or session.get("client_auth") is not True:
         return None
     bt = session.get("client_bot_token")
     return str(bt).strip() if bt else None
@@ -553,19 +672,6 @@ def generate_ai_reply(client_data, chat_id, user_text, platform="telegram", send
         return "عذراً، حدث خطأ تقني مؤقت. يرجى المحاولة مرة أخرى."
 
 
-def is_admin_authorized():
-    if not ADMIN_SECRET:
-        return False
-    if session.get("portal_role") == "admin" and session.get("is_admin"):
-        return True
-    if request.args.get("secret", "") == ADMIN_SECRET or request.headers.get("X-Admin-Secret", "") == ADMIN_SECRET:
-        session.clear()
-        session["portal_role"] = "admin"
-        session["is_admin"] = True
-        return True
-    return False
-
-
 def set_tg_webhook(bot_token, host_url):
     webhook_url = f"{host_url}/webhook/{bot_token}"
     res = requests.get(
@@ -636,7 +742,7 @@ DASHBOARD_HTML = """
     <div class="top-bar">
         <div>
             <h1 style="margin:0; font-size: 21px;">🚀 OmniBot SaaS — لوحة القيادة واستقبال الطلبات</h1>
-            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل لكل عميل | بوابة إشعارات مستقلة للعملاء</span>
+            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل لكل عميل | حماية جلسات وبوابات مستقلة</span>
         </div>
         <div class="toolbar">
             <form method="POST" action="/admin/test-alert" style="margin:0;">
@@ -1214,15 +1320,23 @@ def index():
 def admin_login():
     if not ADMIN_SECRET:
         return "يرجى ضبط متغير البيئة ADMIN_SECRET أولاً في Railway.", 500
+
+    client_ip = get_client_ip()
+    if is_admin_ip_blocked(client_ip):
+        return "تم حظر المحاولات مؤقتاً بسبب تكرار رمز الدخول الخاطئ. يرجى المحاولة بعد 5 دقائق.", 429
+
     error = ""
     if request.method == "POST":
         entered_secret = request.form.get("secret", "").strip()
-        if entered_secret == ADMIN_SECRET:
-            session.clear()
-            session["portal_role"] = "admin"
-            session["is_admin"] = True
+        if entered_secret and hmac.compare_digest(entered_secret, ADMIN_SECRET):
+            clear_failed_admin_attempts(client_ip)
+            clear_client_session_keys()
+            session["session_owner"] = "admin"
+            session["admin_auth"] = True
             return redirect(url_for("admin_dashboard"))
+        record_failed_admin_attempt(client_ip)
         error = "رمز الدخول غير صحيح."
+
     return f"""
     <!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>دخول الإدارة</title>
     <style>body{{font-family:system-ui;background:#0b1120;color:#f8fafc;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}}
@@ -1239,7 +1353,7 @@ def admin_login():
 
 @app.route("/admin/logout", methods=["GET"])
 def admin_logout():
-    session.clear()
+    clear_admin_session_keys()
     return redirect(url_for("admin_login"))
 
 
@@ -1457,7 +1571,8 @@ def admin_dashboard():
             except Exception as e:
                 if conn:
                     conn.rollback()
-                msg = f"❌ حدث خطأ أثناء الحفظ: {e}"
+                logger.error(f"Save client error: {e}")
+                msg = "❌ حدث خطأ أثناء الحفظ. يرجى التحقق من المدخلات."
             finally:
                 release_db_connection(conn)
 
@@ -1569,15 +1684,16 @@ def client_portal_login(access_token):
     if not info:
         return "رابط الدخول غير صالح أو تم إبطاله.", 403
 
-    session.clear()
-    session["portal_role"] = "client"
+    clear_admin_session_keys()
+    session["session_owner"] = "client"
+    session["client_auth"] = True
     session["client_bot_token"] = info["bot_token"]
     return redirect(url_for("client_portal_dashboard"))
 
 
 @app.route("/client/logout", methods=["GET"])
 def client_portal_logout():
-    session.clear()
+    clear_client_session_keys()
     return "تم تسجيل الخروج من واجهة الإشعارات بنجاح.", 200
 
 
@@ -1796,6 +1912,10 @@ def whatsapp_webhook():
             return challenge, 200
         return "Forbidden", 403
 
+    raw_body = request.get_data()
+    if not verify_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256", "")):
+        return "Invalid signature", 403
+
     data = request.get_json(silent=True) or {}
     try:
         for entry in data.get("entry", []):
@@ -1843,6 +1963,10 @@ def instagram_webhook():
             return challenge, 200
         return "Forbidden", 403
 
+    raw_body = request.get_data()
+    if not verify_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256", "")):
+        return "Invalid signature", 403
+
     data = request.get_json(silent=True) or {}
     try:
         for entry in data.get("entry", []):
@@ -1885,7 +2009,11 @@ def webchat_api(site_id):
 
     payload = request.get_json(silent=True) or {}
     user_text = str(payload.get("message", "")).strip()
-    session_id = str(payload.get("session_id", "")).strip() or (request.remote_addr or "web_visitor")
+    session_id = str(payload.get("session_id", "")).strip() or (get_client_ip() or "web_visitor")
+
+    rate_key = f"{site_id}:{session_id}:{get_client_ip()}"
+    if is_webchat_rate_limited(rate_key):
+        return jsonify({"error": "Too many requests. Please slow down."}), 429
 
     if not user_text:
         return jsonify({"error": "Empty message"}), 400
@@ -1900,5 +2028,5 @@ def webchat_api(site_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
+   
+   
