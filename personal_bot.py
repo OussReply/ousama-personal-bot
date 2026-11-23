@@ -18,7 +18,6 @@ from telebot import types
 import anthropic
 import requests
 
-# --- إعداد السجلات ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - omnibot_saas - %(levelname)s - %(message)s"
@@ -29,7 +28,6 @@ app = Flask(__name__)
 CORS(app)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 
-# --- متغيرات البيئة ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
@@ -40,7 +38,6 @@ META_VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "ousama_verify_2026")
 META_APP_SECRET = os.environ.get("META_APP_SECRET", "").strip()
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip()
 
-# --- إعدادات أمان الجلسات والكوكيز وعزل الأدمن عن العميل ---
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("FORCE_HTTPS", "1") == "1":
@@ -66,12 +63,11 @@ def apply_security_headers(response):
     return response
 
 
-# --- حماية ضد التخمين والإغراق (Rate Limiting) ---
-_failed_admin_attempts = {}  # {ip: [timestamps]}
-_webchat_hits = {}          # {key: [timestamps]}
+_failed_admin_attempts = {}
+_webchat_hits = {}
 
 ADMIN_MAX_FAILS = 5
-ADMIN_LOCK_SECONDS = 300      # 5 دقائق حظر مؤقت بعد 5 محاولات خاطئة
+ADMIN_LOCK_SECONDS = 300
 WEBCHAT_MAX_PER_MIN = 20
 
 
@@ -112,7 +108,6 @@ def is_webchat_rate_limited(key):
 
 
 def safe_compare_secret(provided_secret, expected_secret):
-    """مقارنة آمنة زمنياً تدعم UTF-8 دون رمي TypeError مع الأحرف غير ASCII."""
     if not provided_secret or not expected_secret:
         return False
     try:
@@ -125,7 +120,6 @@ def safe_compare_secret(provided_secret, expected_secret):
 
 
 def verify_meta_signature(raw_body_bytes, signature_header):
-    """يتحقق من توقيع Meta HMAC SHA-256 إذا تم ضبط META_APP_SECRET."""
     if not META_APP_SECRET:
         return True
     if not signature_header or not signature_header.startswith("sha256="):
@@ -139,7 +133,6 @@ def verify_meta_signature(raw_body_bytes, signature_header):
     return hmac.compare_digest(expected_sig, received_sig)
 
 
-# --- إعدادات حماية رصيد API للنسخة التجريبية ---
 DEMO_QUESTION_LIMIT = int(os.environ.get("DEMO_QUESTION_LIMIT", "10"))
 DEMO_LIMIT_MESSAGE = os.environ.get(
     "DEMO_LIMIT_MESSAGE",
@@ -147,7 +140,6 @@ DEMO_LIMIT_MESSAGE = os.environ.get(
     "إذا كنت ترغب في تجربة إضافية أو بناء بوت متكامل ومخصص بالكامل لنشاطك التجاري، يسعدني جداً تواصلك المباشر عبر زر (📞 تواصل مع موظف) لنبدأ تجهيز نسختك الخاصة."
 )
 
-# --- قواعد استخراج كل بيانات صناعة البوت دفعة واحدة ---
 LEAD_EXTRACTION_RULES = """
 
 [تعليمات العمل واستخراج المتطلبات - إلزامية]:
@@ -171,7 +163,6 @@ LEAD_EXTRACTION_RULES = """
 4. لا تذكر للعميل وجود هذه العلامات البرمجية، ولا تكرر إرسال [LEAD_READY] إذا تم جمع البيانات بالفعل.
 """
 
-# --- مجمع اتصالات PostgreSQL ---
 db_pool = None
 if DATABASE_URL:
     try:
@@ -283,7 +274,6 @@ def init_db():
 init_db()
 
 
-# --- دوال قاعدة البيانات ---
 def save_message(bot_id, chat_id, role, content):
     conn = None
     try:
@@ -345,7 +335,6 @@ def get_chat_history(bot_id, chat_id, limit=14):
 
 
 def clear_user_context_keep_quota(bot_id, chat_id):
-    """يمسح ردود المساعد فقط لإعادة سياق الحوار مع الإبقاء على رسائل user لحماية حد الأسئلة التجريبية."""
     conn = None
     try:
         conn = get_db_connection()
@@ -425,7 +414,6 @@ def save_lead(bot_token, client_name, platform, sender_chat_id, sender_label, me
         release_db_connection(conn)
 
 
-# --- دوال إدارة رموز دخول بوابة العميل ---
 def issue_client_portal_token(bot_token):
     conn = None
     try:
@@ -494,7 +482,6 @@ def validate_portal_access_token(access_token):
         release_db_connection(conn)
 
 
-# --- عزل الجلسات والصلاحيات بين الأدمن والعميل ---
 def clear_admin_session_keys():
     for k in ("admin_auth", "is_admin"):
         session.pop(k, None)
@@ -524,14 +511,12 @@ def is_admin_authorized():
 
 
 def get_authorized_client_bot_token():
-    """يرجع bot_token الخاص بالعميل فقط إذا كانت الجلسة مخصصة حصراً لدور client."""
     if session.get("session_owner") != "client" or session.get("client_auth") is not True:
         return None
     bt = session.get("client_bot_token")
     return str(bt).strip() if bt else None
 
 
-# --- معاينة معزولة لكل مجرّب في البوت التجريبي ---
 def generate_demo_user_token(bot_token, sender_chat_id):
     payload = f"{str(bot_token).strip()}:{str(sender_chat_id).strip()}".encode("utf-8")
     secret = str(app.secret_key).encode("utf-8")
@@ -553,7 +538,6 @@ def build_demo_user_portal_url(host_url, bot_token, sender_chat_id):
     return f"{clean_host}/client/demo/{bot_token}/{sender_chat_id}/{sig}"
 
 
-# --- دالة الإرسال إلى chat_id ---
 def send_to_chat_id(bot_token, target_chat_id, text):
     if not bot_token or not target_chat_id:
         return False
@@ -599,7 +583,6 @@ def handle_incoming_notification(client_data, platform, sender_id, sender_label,
     notify_telegram_target(client_data, platform, sender_id, sender_label, user_text, is_urgent=is_urgent)
 
 
-# --- أزرار بوت تيليجرام ---
 def build_telegram_keyboard(client_data):
     raw_btns = client_data.get("quick_buttons") or "[]"
     try:
@@ -620,7 +603,6 @@ def build_telegram_keyboard(client_data):
     return markup
 
 
-# --- العقل الذكي الموحد + استخراج البيانات + حماية الرصيد ---
 def match_auto_reply(client_data, user_text):
     raw_rules = client_data.get("auto_replies") or "{}"
     try:
@@ -728,7 +710,6 @@ def set_tg_webhook(bot_token, host_url):
     return res.json()
 
 
-# ================= واجهة لوحة تحكم الأدمن =================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -743,464 +724,4 @@ DASHBOARD_HTML = """
         h1, h2, h3 { color: var(--accent); margin-top: 0; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; background: var(--card); padding: 15px 20px; border-radius: 12px; border: 1px solid var(--border); }
         .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-        .live-banner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: linear-gradient(90deg, #172554, #1e293b); border: 1px solid #38bdf8; padding: 14px 18px; border-radius: 12px; margin-bottom: 18px; }
-        .live-banner.has-unread { background: linear-gradient(90deg, #7c2d12, #1e293b); border-color: #fb923c; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 20px; }
-        .stat-box { background: var(--card); padding: 16px; border-radius: 12px; border-right: 4px solid var(--accent); border-top: 1px solid var(--border); }
-        .stat-num { font-size: 26px; font-weight: bold; color: #fff; }
-        .stat-label { font-size: 13px; color: #94a3b8; margin-top: 4px; }
-        .card { background: var(--card); padding: 20px; border-radius: 12px; margin-bottom: 22px; border: 1px solid var(--border); box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
-        label { display: block; margin-bottom: 6px; font-weight: 600; color: #cbd5e1; font-size: 14px; }
-        input, textarea, select { width: 100%; padding: 10px 12px; margin-bottom: 14px; border-radius: 8px; border: 1px solid var(--border); background: #0f172a; color: #fff; box-sizing: border-box; font-family: inherit; }
-        input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
-        .btn { background: var(--primary); color: white; border: none; padding: 9px 14px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
-        .btn:hover { opacity: 0.92; }
-        .btn-lg { padding: 12px 22px; font-size: 15px; }
-        .btn-success { background: #16a34a; }
-        .btn-danger { background: #dc2626; }
-        .btn-warn { background: #d97706; }
-        .btn-purple { background: #7c3aed; }
-        .btn-dark { background: #334155; }
-        .actions-cell { display: flex; flex-wrap: wrap; gap: 5px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { padding: 11px; text-align: right; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 13px; }
-        th { color: #94a3b8; background: #0f172a; }
-        tr.unread-row { background: rgba(251, 146, 60, 0.14); }
-        .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
-        .active { background: #14532d; color: #4ade80; }
-        .inactive { background: #7f1d1d; color: #f87171; }
-        .unread-badge { background: #ea580c; color: #fff; }
-        .read-badge { background: #334155; color: #cbd5e1; }
-        .plat-badge { background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
-        .alert { background: #065f46; color: #a7f3d0; padding: 13px 16px; border-radius: 8px; margin-bottom: 18px; border: 1px solid #10b981; }
-        .hint { font-size: 12px; color: #94a3b8; margin-top: -10px; margin-bottom: 14px; }
-        .modal { display: none; position: fixed; z-index: 999; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); }
-        .modal-content { background: var(--card); margin: 8% auto; padding: 22px; border: 1px solid var(--border); width: 90%; max-width: 660px; border-radius: 12px; }
-        pre { background: #0f172a; padding: 12px; border-radius: 8px; overflow-x: auto; direction: ltr; text-align: left; color: #38bdf8; font-size: 12px; }
-        .lead-text { white-space: pre-line; line-height: 1.6; }
-        .portal-link-box { background: #0f172a; border: 1px dashed #38bdf8; padding: 10px 12px; border-radius: 8px; direction: ltr; text-align: left; font-family: monospace; font-size: 12px; color: #7dd3fc; word-break: break-all; margin-bottom: 10px; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <div class="top-bar">
-        <div>
-            <h1 style="margin:0; font-size: 21px;">🚀 OmniBot SaaS — لوحة القيادة واستقبال الطلبات</h1>
-            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل لكل عميل | حماية جلسات وبوابات مستقلة</span>
-        </div>
-        <div class="toolbar">
-            <form method="POST" action="/admin/test-alert" style="margin:0;">
-                <button type="submit" class="btn btn-purple">🔔 اختبار إشعار (أدمن + تيليجرام)</button>
-            </form>
-            <a href="/admin/export-leads" class="btn btn-success">📥 تصدير CSV</a>
-            <button type="button" class="btn btn-dark" onclick="resetForm()">🧹 تفريغ الحقول</button>
-            <a href="/admin/logout" class="btn btn-danger">🚪 خروج</a>
-        </div>
-    </div>
-
-    <div id="liveBanner" class="live-banner {% if unread_count > 0 %}has-unread{% endif %}">
-        <div>
-            <strong id="liveBannerTitle">
-                {% if unread_count > 0 %}
-                    🔔 تنبيه: لديك {{ unread_count }} طلب/إشعار جديد مكتمل البيانات!
-                {% else %}
-                    ✅ مركز الطلبات نشط — لن تصلك إلا البيانات الكاملة الجاهزة لصناعة البوت.
-                {% endif %}
-            </strong>
-            <div id="liveBannerSub" style="font-size:12px; color:#cbd5e1; margin-top:3px;">
-                يتم فحص الطلبات الجديدة تلقائياً كل 10 ثوانٍ.
-            </div>
-        </div>
-        <div class="toolbar">
-            <form method="POST" action="/admin/mark-read" style="margin:0;">
-                <button type="submit" class="btn btn-warn">✔️ تحديد الكل كمقروء</button>
-            </form>
-            <button type="button" class="btn" onclick="location.reload()">🔄 تحديث الآن</button>
-        </div>
-    </div>
-
-    {% if msg %}
-    <div class="alert">{{ msg }}</div>
-    {% endif %}
-
-    {% if client_portal_url %}
-    <div class="card" style="border-color:#38bdf8;">
-        <h3>🔑 رابط دخول واجهة الإشعارات الخاص بالعميل</h3>
-        <p style="font-size:13px; color:#cbd5e1;">أرسل هذا الرابط للعميل فقط؛ سيعرض له إشعارات بوته وحده دون أي صلاحيات إدارية:</p>
-        <div class="portal-link-box" id="generatedPortalUrl">{{ client_portal_url }}</div>
-        <button type="button" class="btn btn-success" onclick="copyText('generatedPortalUrl')">📋 نسخ رابط العميل</button>
-    </div>
-    {% endif %}
-
-    <div class="stats-grid">
-        <div class="stat-box">
-            <div class="stat-num" id="statUnread">{{ unread_count }}</div>
-            <div class="stat-label">🔔 طلبات جديدة غير مقروءة</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-num">{{ clients|length }}</div>
-            <div class="stat-label">🤖 إجمالي البوتات</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-num">{{ active_count }}</div>
-            <div class="stat-label">🟢 البوتات النشطة</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-num">{{ demo_limit }}</div>
-            <div class="stat-label">🛡️ الحد التجريبي لكل عميل</div>
-        </div>
-    </div>
-
-    <div class="card">
-        <h2>📋 طلبات صناعة البوتات المستخرجة ({{ leads|length }})</h2>
-        <div style="overflow-x:auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th>الحالة</th>
-                    <th>المصدر</th>
-                    <th>القناة</th>
-                    <th>بيانات العميل</th>
-                    <th>المواصفات والمتطلبات المستخرجة</th>
-                    <th>التوقيت</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for l in leads[:40] %}
-                <tr class="{% if not l.is_read %}unread-row{% endif %}">
-                    <td>
-                        {% if not l.is_read %}
-                        <span class="badge unread-badge">🆕 جديد</span>
-                        {% else %}
-                        <span class="badge read-badge">مقروء</span>
-                        {% endif %}
-                    </td>
-                    <td><strong>{{ l.client_name }}</strong></td>
-                    <td><span class="plat-badge">{{ (l.platform or 'telegram')|upper }}</span></td>
-                    <td style="font-size:12px;">{{ l.sender_label or 'عميل' }}<br><code>{{ l.sender_chat_id }}</code></td>
-                    <td class="lead-text">{{ l.message_text }}</td>
-                    <td style="font-size:12px; color:#94a3b8;">{{ l.created_at }}</td>
-                </tr>
-                {% endfor %}
-                {% if leads|length == 0 %}
-                <tr><td colspan="6" style="text-align:center; color:#94a3b8;">لا توجد طلبات مكتملة مستخرجة بعد.</td></tr>
-                {% endif %}
-            </tbody>
-        </table>
-        </div>
-    </div>
-
-    <div class="card">
-        <h2>➕ إضافة أو تعديل بوت عميل</h2>
-        <form method="POST" action="/admin" id="botForm">
-            <div class="grid-2">
-                <div>
-                    <label>المنصة / القناة:</label>
-                    <select id="platform" name="platform" onchange="updateLabels()">
-                        <option value="telegram">تيليجرام (Telegram Bot)</option>
-                        <option value="whatsapp">واتساب الرسمي (WhatsApp Cloud API)</option>
-                        <option value="instagram">إنستجرام (Instagram Messaging API)</option>
-                        <option value="web">موقع إلكتروني (Web Chat Widget)</option>
-                    </select>
-                </div>
-                <div>
-                    <label>اسم البوت أو المشروع:</label>
-                    <input type="text" id="name" name="name" placeholder="مثال: OmniBot التجريبي" required>
-                </div>
-            </div>
-
-            <div class="grid-2">
-                <div>
-                    <label id="token_label">توكن البوت (Bot Token):</label>
-                    <input type="text" id="token" name="token" placeholder="123456789:ABCdef..." required>
-                    <div id="token_hint" class="hint">تيليجرام: Bot Token | واتساب: Phone Number ID | إنستجرام: IG Account ID | ويب: معرف بالإنجليزية</div>
-                </div>
-                <div>
-                    <label>معرف استقبال التنبيهات (Notify Chat ID - اختياري):</label>
-                    <input type="text" id="notify_chat_id" name="notify_chat_id" placeholder="اتركه فارغاً لاستخدام ADMIN_CHAT_ID">
-                    <div class="hint">رقم Chat ID الخاص بك أو الخاص بالعميل لإرسال التنبيهات إليه عبر تيليجرام.</div>
-                </div>
-            </div>
-
-            <div id="extra_token_div" style="display:none;">
-                <label>مفتاح الوصول الدائم (Meta Permanent Access Token):</label>
-                <input type="text" id="extra_token" name="extra_token" placeholder="EAABsbCS1iHgBO...">
-            </div>
-
-            <div class="grid-2">
-                <div>
-                    <label>رسالة الترحيب (/start - اختياري):</label>
-                    <input type="text" id="welcome_message" name="welcome_message" placeholder="مرحباً بك! أنا مساعدك الذكي لبناء بوت احترافي لمشروعك. أخبرني ماذا تريد؟">
-                </div>
-                <div>
-                    <label>أزرار تيليجرام السريعة (JSON Array - اختياري):</label>
-                    <input type="text" id="quick_buttons" name="quick_buttons" value='["🤖 أريد بوت لمتجري", "🏢 أريد بوت لشركتي"]'>
-                </div>
-            </div>
-
-            <label>شخصية وتعليمات البوت (System Prompt):</label>
-            <textarea id="prompt" name="prompt" rows="4" placeholder="أنت مستشار ذكي لخدمة العملاء وبناء البوتات الذكية. قدّم نفسك باختصار واسأل العميل عن مشروعه والمتطلبات التي يريدها في البوت..." required></textarea>
-
-            <div class="grid-2">
-                <div>
-                    <label>ردود تلقائية بالكلمات المفتاحية (JSON - اختياري):</label>
-                    <textarea id="auto_replies" name="auto_replies" rows="2">{}</textarea>
-                </div>
-                <div>
-                    <label>مفتاح Anthropic API خاص بالعميل (اختياري):</label>
-                    <input type="text" id="api_key" name="api_key" placeholder="sk-ant-...">
-                </div>
-            </div>
-
-            <button type="submit" class="btn btn-lg">💾 حفظ وتفعيل البوت</button>
-        </form>
-    </div>
-
-    <div class="card">
-        <h2>📋 البوتات المسجلة ({{ clients|length }})</h2>
-        <div style="overflow-x:auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th>المشروع</th>
-                    <th>القناة</th>
-                    <th>المعرف / التوكن</th>
-                    <th>بوابة العميل</th>
-                    <th>الحالة</th>
-                    <th>أزرار التحكم</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for c in clients %}
-                {% set p_tok = portal_tokens_map.get(c.bot_token) %}
-                <tr>
-                    <td><strong>{{ c.client_name }}</strong></td>
-                    <td><span class="plat-badge">{{ (c.platform or 'telegram')|upper }}</span></td>
-                    <td style="font-family: monospace; font-size: 12px;">{{ c.bot_token[:16] }}...</td>
-                    <td>
-                        {% if p_tok %}
-                        <span class="badge active">مفعّلة</span>
-                        {% else %}
-                        <span class="badge read-badge">غير مُصدرة</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if c.is_active %}
-                        <span class="badge active">🟢 نشط</span>
-                        {% else %}
-                        <span class="badge inactive">🔴 متوقف</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        <div class="actions-cell">
-                            <form method="POST" action="/admin/issue-client-portal" style="margin:0;">
-                                <input type="hidden" name="token" value="{{ c.bot_token }}">
-                                <button type="submit" class="btn btn-purple">🔑 رابط العميل</button>
-                            </form>
-
-                            <button type="button" class="btn btn-warn"
-                                data-name="{{ c.client_name|e }}"
-                                data-token="{{ c.bot_token|e }}"
-                                data-platform="{{ (c.platform or 'telegram')|e }}"
-                                data-extra="{{ (c.extra_token or '')|e }}"
-                                data-notify="{{ (c.notify_chat_id or '')|e }}"
-                                data-welcome="{{ (c.welcome_message or '')|e }}"
-                                data-buttons="{{ (c.quick_buttons or '[]')|e }}"
-                                data-prompt="{{ c.system_prompt|e }}"
-                                data-auto="{{ (c.auto_replies or '{}')|e }}"
-                                data-key="{{ (c.anthropic_key or '')|e }}"
-                                onclick="fillFormFromBtn(this)">✏️ تعديل</button>
-
-                            <form method="POST" action="/admin/toggle" style="margin:0;">
-                                <input type="hidden" name="token" value="{{ c.bot_token }}">
-                                <input type="hidden" name="active" value="{{ 'false' if c.is_active else 'true' }}">
-                                {% if c.is_active %}
-                                <button type="submit" class="btn btn-dark">⏸️ إيقاف</button>
-                                {% else %}
-                                <button type="submit" class="btn btn-success">▶️ تفعيل</button>
-                                {% endif %}
-                            </form>
-
-                            {% if (c.platform or 'telegram') == 'telegram' %}
-                            <form method="POST" action="/admin/rehook" style="margin:0;">
-                                <input type="hidden" name="token" value="{{ c.bot_token }}">
-                                <button type="submit" class="btn">🔗 ربط</button>
-                            </form>
-                            {% endif %}
-
-                            {% if c.platform == 'web' %}
-                            <button type="button" class="btn" onclick="showWebSnippet('{{ c.bot_token|e }}')">🌐 كود الموقع</button>
-                            {% endif %}
-
-                            <form method="POST" action="/admin/clear-leads" style="margin:0;" onsubmit="return confirm('مسح جميع إشعارات هذا البوت فقط؟');">
-                                <input type="hidden" name="token" value="{{ c.bot_token }}">
-                                <button type="submit" class="btn btn-dark">🧹 مسح الإشعارات</button>
-                            </form>
-
-                            <form method="POST" action="/admin/delete" style="margin:0;" onsubmit="return confirm('حذف هذا البوت نهائياً؟');">
-                                <input type="hidden" name="token" value="{{ c.bot_token }}">
-                                <button type="submit" class="btn btn-danger">🗑️ حذف</button>
-                            </form>
-                        </div>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        </div>
-    </div>
-</div>
-
-<div id="webModal" class="modal">
-    <div class="modal-content">
-        <h3>🌐 كود دمج البوت في موقع العميل</h3>
-        <p style="font-size:13px; color:#cbd5e1;">انسخ الكود التالي وضعه داخل صفحة موقع العميل قبل إغلاق <code>&lt;/body&gt;</code>:</p>
-        <pre id="webCodeBox"></pre>
-        <div class="toolbar">
-            <button type="button" class="btn btn-success" onclick="copyWebCode()">📋 نسخ الكود</button>
-            <button type="button" class="btn btn-dark" onclick="closeWebModal()">إغلاق</button>
-        </div>
-    </div>
-</div>
-
-<script>
-    let lastKnownUnread = {{ unread_count }};
-
-    function updateLabels() {
-        const plat = document.getElementById('platform').value;
-        const extraDiv = document.getElementById('extra_token_div');
-        const label = document.getElementById('token_label');
-        if (plat === 'whatsapp') {
-            extraDiv.style.display = 'block';
-            label.innerText = 'معرف رقم هاتف واتساب (Phone Number ID):';
-        } else if (plat === 'instagram') {
-            extraDiv.style.display = 'block';
-            label.innerText = 'معرف حساب إنستجرام (Instagram Account ID):';
-        } else if (plat === 'web') {
-            extraDiv.style.display = 'none';
-            label.innerText = 'معرف الموقع (Site ID بالإنجليزية):';
-        } else {
-            extraDiv.style.display = 'none';
-            label.innerText = 'توكن البوت (من BotFather):';
-        }
-    }
-
-    function fillFormFromBtn(btn) {
-        document.getElementById('name').value = btn.dataset.name || '';
-        document.getElementById('token').value = btn.dataset.token || '';
-        document.getElementById('platform').value = btn.dataset.platform || 'telegram';
-        document.getElementById('extra_token').value = btn.dataset.extra || '';
-        document.getElementById('notify_chat_id').value = btn.dataset.notify || '';
-        document.getElementById('welcome_message').value = btn.dataset.welcome || '';
-        document.getElementById('quick_buttons').value = btn.dataset.buttons || '[]';
-        document.getElementById('prompt').value = btn.dataset.prompt || '';
-        document.getElementById('auto_replies').value = btn.dataset.auto || '{}';
-        document.getElementById('api_key').value = btn.dataset.key || '';
-        updateLabels();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    function resetForm() {
-        document.getElementById('botForm').reset();
-        document.getElementById('auto_replies').value = '{}';
-        document.getElementById('quick_buttons').value = '["🤖 أريد بوت لمتجري", "🏢 أريد بوت لشركتي"]';
-        updateLabels();
-    }
-
-    function copyText(elementId) {
-        const el = document.getElementById(elementId);
-        if (!el) return;
-        navigator.clipboard.writeText(el.textContent.trim());
-        alert('تم النسخ بنجاح!');
-    }
-
-    function showWebSnippet(siteId) {
-        const baseUrl = window.location.origin;
-        const endScript = "</" + "script>";
-        const code = `<div id="omnibot-box" style="position:fixed;bottom:20px;left:20px;z-index:9999;background:#0f172a;color:#fff;padding:14px;border-radius:12px;border:1px solid #38bdf8;width:290px;font-family:sans-serif;">
-  <div style="font-weight:bold;margin-bottom:8px;">💬 المساعد الذكي</div>
-  <div id="omnibot-log" style="max-height:170px;overflow-y:auto;font-size:13px;margin-bottom:8px;"></div>
-  <input id="omnibot-inp" placeholder="اكتب رسالتك..." style="width:100%;padding:7px;border-radius:6px;border:none;margin-bottom:6px;box-sizing:border-box;">
-  <button onclick="sendOmniMsg()" style="width:100%;padding:7px;background:#0284c7;color:#fff;border:none;border-radius:6px;cursor:pointer;">إرسال</button>
-</div>
-<script>
-const sid = "web_" + Math.random().toString(36).slice(2, 9);
-async function sendOmniMsg() {
-  const inp = document.getElementById("omnibot-inp");
-  const log = document.getElementById("omnibot-log");
-  const txt = inp.value.trim();
-  if (!txt) return;
-  log.innerHTML += "<div><b>أنت:</b> " + txt + "</div>";
-  inp.value = "";
-  const r = await fetch("${baseUrl}/api/webchat/${siteId}", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({message: txt, session_id: sid})
-  });
-  const d = await r.json();
-  log.innerHTML += "<div style='color:#38bdf8;'><b>البوت:</b> " + (d.reply || "") + "</div>";
-  log.scrollTop = log.scrollHeight;
-}
-${endScript}`;
-        document.getElementById('webCodeBox').textContent = code;
-        document.getElementById('webModal').style.display = 'block';
-    }
-
-    function closeWebModal() {
-        document.getElementById('webModal').style.display = 'none';
-    }
-
-    function copyWebCode() {
-        const text = document.getElementById('webCodeBox').textContent;
-        navigator.clipboard.writeText(text);
-        alert('تم نسخ كود الموقع بنجاح!');
-    }
-
-    async function pollNotifications() {
-        try {
-            const res = await fetch('/admin/notifications-status');
-            if (!res.ok) return;
-            const data = await res.json();
-            const unread = Number(data.unread_count || 0);
-            document.getElementById('statUnread').textContent = unread;
-            const banner = document.getElementById('liveBanner');
-            const title = document.getElementById('liveBannerTitle');
-            const sub = document.getElementById('liveBannerSub');
-            if (unread > 0) {
-                banner.classList.add('has-unread');
-                title.textContent = `🔔 تنبيه: لديك ${unread} طلب/إشعار جديد مكتمل البيانات!`;
-                if (data.latest) {
-                    sub.textContent = `آخر طلب من (${data.latest.client_name}): ${data.latest.message_text.slice(0, 90)}...`;
-                }
-                if (unread > lastKnownUnread) {
-                    lastKnownUnread = unread;
-                }
-            } else {
-                banner.classList.remove('has-unread');
-                title.textContent = '✅ مركز الطلبات نشط — لن تصلك إلا البيانات الكاملة الجاهزة لصناعة البوت.';
-                sub.textContent = 'يتم فحص الطلبات الجديدة تلقائياً كل 10 ثوانٍ.';
-                lastKnownUnread = 0;
-            }
-        } catch (e) {}
-    }
-
-    setInterval(pollNotifications, 10000);
-</script>
-</body>
-</html>
-"""
-
-
-# ================= واجهة إشعارات العميل المخصصة والمعزولة =================
-CLIENT_PORTAL_HTML = """
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>إشعارات الزبائن — {{ client_name }}</title>
-    <style>
-        :root { --bg: #0b1120; --card: #1e293b; --border: #334155; --primary: #0284c7; --accent: #38bdf8; }
-        body {
+        .live-banner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: linear-gradient(90deg, #172554, #1e293b); border: 1px solid #38bdf8; padding: 14px 18px; border-radius: 12px; margin-bottom: 1
