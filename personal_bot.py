@@ -31,6 +31,12 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
+UNLIMITED_CHAT_IDS = [
+    cid.strip() for cid in os.environ.get("UNLIMITED_CHAT_IDS", "").split(",") if cid.strip()
+]
+if ADMIN_CHAT_ID and ADMIN_CHAT_ID not in UNLIMITED_CHAT_IDS:
+    UNLIMITED_CHAT_IDS.append(ADMIN_CHAT_ID)
+
 ALERT_BOT_TOKEN = os.environ.get("ALERT_BOT_TOKEN", "").strip()
 DEFAULT_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
@@ -646,15 +652,16 @@ def extract_and_notify_lead(client_data, platform, sender_id, sender_label, ai_r
 
 def generate_ai_reply(client_data, chat_id, user_text, platform="telegram", sender_label="عميل", base_url=""):
     bot_id = client_data["bot_token"]
+    is_admin_user = str(chat_id).strip() in UNLIMITED_CHAT_IDS
 
-    if DEMO_QUESTION_LIMIT > 0:
+    if DEMO_QUESTION_LIMIT > 0 and not is_admin_user:
         used_questions = count_user_questions(bot_id, chat_id)
         if used_questions >= DEMO_QUESTION_LIMIT:
             return DEMO_LIMIT_MESSAGE
 
     save_message(bot_id, chat_id, "user", user_text)
     used_now = count_user_questions(bot_id, chat_id)
-    remaining = max(0, DEMO_QUESTION_LIMIT - used_now)
+    remaining = 999 if is_admin_user else max(0, DEMO_QUESTION_LIMIT - used_now)
 
     auto_msg = match_auto_reply(client_data, user_text)
     if auto_msg:
@@ -666,10 +673,16 @@ def generate_ai_reply(client_data, chat_id, user_text, platform="telegram", send
     if not api_key:
         return "عذراً، الخدمة قيد التهيئة حالياً."
 
+    quota_note = (
+        "(معلومة للبوت: أنت في جلسة عرض توضيحي غير محدودة؛ أجب باحترافية ووضوح)."
+        if is_admin_user else
+        f"(معلومة للبوت: هذا عميل في النسخة التجريبية ولديه {remaining} رسائل متبقية؛ قدّم تجربة مفيدة ومختصرة واجمع كامل متطلبات مشروعه بهدوء ووضوح)."
+    )
+
     full_system_prompt = (
         f"{client_data['system_prompt']}\n"
         f"{LEAD_EXTRACTION_RULES}\n"
-        f"(معلومة للبوت: هذا عميل في النسخة التجريبية ولديه {remaining} رسائل متبقية؛ قدّم تجربة مفيدة ومختصرة واجمع كامل متطلبات مشروعه بهدوء ووضوح)."
+        f"{quota_note}"
     )
 
     try:
@@ -691,7 +704,7 @@ def generate_ai_reply(client_data, chat_id, user_text, platform="telegram", send
 
         save_message(bot_id, chat_id, "assistant", clean_reply)
 
-        if DEMO_QUESTION_LIMIT > 0 and remaining == 0:
+        if DEMO_QUESTION_LIMIT > 0 and remaining == 0 and not is_admin_user:
             clean_reply += "\n\n✨ (أنهيت رسائلك التجريبية الـ 10؛ اضغط على «📞 تواصل مع موظف» لإطلاق بوتك الخاص!)"
 
         return clean_reply
@@ -768,7 +781,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="top-bar">
         <div>
             <h1 style="margin:0; font-size: 21px;">🚀 OmniBot SaaS — لوحة القيادة والطلبات</h1>
-            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل لكل عميل | حماية جلسات وبوابات مستقلة</span>
+            <span style="font-size: 12px; color: #94a3b8;">حد الأسئلة التجريبية: {{ demo_limit }} رسائل للعملاء | غير محدود لحسابات الإدارة</span>
         </div>
         <div class="toolbar">
             <form method="POST" action="/admin/test-alert" style="margin:0;">
@@ -1014,6 +1027,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <button type="button" class="btn" onclick="showWebSnippet('{{ c.bot_token|e }}')">🌐 كود الموقع</button>
                             {% endif %}
 
+                            <form method="POST" action="/admin/clear-chats" style="margin:0;" onsubmit="return confirm('تصفير جميع رسائل المحادثات لهذا البوت؟');">
+                                <input type="hidden" name="token" value="{{ c.bot_token }}">
+                                <button type="submit" class="btn btn-warn">🔄 تصفير المحادثات</button>
+                            </form>
+
                             <form method="POST" action="/admin/clear-leads" style="margin:0;" onsubmit="return confirm('مسح جميع إشعارات هذا البوت فقط؟');">
                                 <input type="hidden" name="token" value="{{ c.bot_token }}">
                                 <button type="submit" class="btn btn-dark">🧹 مسح الإشعارات</button>
@@ -1204,6 +1222,7 @@ CLIENT_PORTAL_HTML = """<!DOCTYPE html>
         .unread-badge { background: #ea580c; color: #fff; }
         .read-badge { background: #334155; color: #cbd5e1; }
         .plat-badge { background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        .sample-badge { background: #312e81; color: #c4b5fd; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
         .alert { background: #065f46; color: #a7f3d0; padding: 12px 15px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #10b981; }
         .lead-text { white-space: pre-line; line-height: 1.6; }
     </style>
@@ -1236,7 +1255,7 @@ CLIENT_PORTAL_HTML = """<!DOCTYPE html>
                 {% if show_full_controls is not defined or show_full_controls %}
                     يتم التحديث تلقائياً كل 10 ثوانٍ.
                 {% else %}
-                    معاينة معزولة خاصة بحسابك التجريبي فقط.
+                    عرض معاينة للقراءة فقط: يوضح شكل الإشعارات والطلبات كما تصل لصاحب المشروع.
                 {% endif %}
             </div>
         </div>
@@ -1245,10 +1264,6 @@ CLIENT_PORTAL_HTML = """<!DOCTYPE html>
             <form method="POST" action="/client/mark-read" style="margin:0;">
                 <button type="submit" class="btn btn-warn">✔️ تحديد الكل كمقروء</button>
             </form>
-            <button type="button" class="btn" onclick="location.reload()">🔄 تحديث الآن</button>
-        </div>
-        {% else %}
-        <div class="toolbar">
             <button type="button" class="btn" onclick="location.reload()">🔄 تحديث الآن</button>
         </div>
         {% endif %}
@@ -1296,7 +1311,9 @@ CLIENT_PORTAL_HTML = """<!DOCTYPE html>
                 {% for l in leads %}
                 <tr class="{% if not l.is_read %}unread-row{% endif %}">
                     <td>
-                        {% if not l.is_read %}
+                        {% if l.is_sample %}
+                        <span class="badge sample-badge">👁️ معاينة</span>
+                        {% elif not l.is_read %}
                         <span class="badge unread-badge">🆕 جديد</span>
                         {% else %}
                         <span class="badge read-badge">مقروء</span>
@@ -1524,6 +1541,31 @@ def admin_issue_client_portal():
     host_url = (PUBLIC_BASE_URL or request.host_url).rstrip("/").replace("http://", "https://")
     portal_url = f"{host_url}/client/login/{access_tok}"
     return redirect(url_for("admin_dashboard", msg="✅ تم إصدار رابط دخول خاص ومستقل للعميل.", portal_url=portal_url))
+
+
+@app.route("/admin/clear-chats", methods=["POST"])
+def admin_clear_chats():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+    if not token:
+        return redirect(url_for("admin_dashboard", msg="⚠️ يرجى تحديد البوت لتصفير محادثاته."))
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM chat_history WHERE bot_token = %s", (token,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Clear chats error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return redirect(url_for("admin_dashboard", msg="🔄 تم تصفير جميع رسائل المحادثات لهذا البوت بنجاح."))
 
 
 @app.route("/admin/clear-leads", methods=["POST"])
@@ -1759,9 +1801,33 @@ def client_demo_user_dashboard(bot_token, sender_chat_id, sig):
             "SELECT * FROM leads WHERE bot_token = %s AND sender_chat_id = %s ORDER BY id DESC LIMIT 50",
             (str(bot_token).strip(), str(sender_chat_id).strip())
         )
-        leads = cur.fetchall()
-        unread_count = sum(1 for r in leads if not r.get("is_read"))
+        raw_leads = cur.fetchall()
         cur.close()
+
+        for r in raw_leads:
+            item = dict(r)
+            item["is_sample"] = False
+            leads.append(item)
+
+        unread_count = sum(1 for r in leads if not r.get("is_read"))
+
+        # عرض إشعار توضيحي ثابت للقراءة فقط في كل بوت تجريبي ليرى العميل كيف يصل الإشعار
+        sample_notification = {
+            "is_sample": True,
+            "is_read": False,
+            "platform": client_info.get("platform") or "telegram",
+            "sender_label": "نموذج إشعار زبون (عرض توضيحي)",
+            "sender_chat_id": "DEMO-PREVIEW",
+            "message_text": (
+                "🔔 هكذا يصل الإشعار لصاحب المشروع عند اكتمال طلب أو استفسار زبون:\n"
+                "• الاسم / المشروع: متجر الأناقة\n"
+                "• وسيلة التواصل: واتساب / تيليجرام\n"
+                "• نوع النشاط: متجر إلكتروني\n"
+                "• المهام المطلوبة: الرد على الأسعار واستقبال الطلبات تلقائياً."
+            ),
+            "created_at": "معاينة للقراءة فقط"
+        }
+        leads.append(sample_notification)
     except Exception as e:
         logger.error(f"Demo user portal error: {e}")
     finally:
@@ -1769,13 +1835,13 @@ def client_demo_user_dashboard(bot_token, sender_chat_id, sig):
 
     return render_template_string(
         CLIENT_PORTAL_HTML,
-        client_name=f"{client_info['client_name']} (معاينتك الخاصة)",
+        client_name=f"{client_info['client_name']} (اللوحة التجريبية — للقراءة فقط)",
         platform=client_info.get("platform") or "telegram",
         is_active=bool(client_info.get("is_active")),
         leads=leads,
         unread_count=unread_count,
         show_full_controls=False,
-        msg="هذه الواجهة تعرض إشعاراتك أنت فقط في هذه التجربة دون إظهار بيانات الآخرين."
+        msg="لوحة معاينة تجريبية للقراءة فقط: تعرض شكل الإشعارات والطلبات الخاصة بك دون إمكانية التعديل أو التحكم."
     )
 
 
@@ -1966,12 +2032,14 @@ def telegram_webhook(bot_token):
     sender_name = (update.message.from_user.first_name if update.message.from_user else "") or "مستخدم"
     sender_user = f"@{update.message.from_user.username}" if (update.message.from_user and update.message.from_user.username) else "بدون يوزر"
     sender_label = f"{sender_name} ({sender_user})"
+    is_admin_user = chat_id in UNLIMITED_CHAT_IDS
 
     if user_text == "/start":
+        limit_text = "" if is_admin_user else f"\nلديك {DEMO_QUESTION_LIMIT} رسائل في هذه الجلسة التجريبية؛"
         welcome = client_data.get("welcome_message") or (
             f"أهلاً بك في {client_data['client_name']}! 👋\n"
-            f"أنا مساعدك الذكي المتخصص في تصميم البوتات الذكية للأعمال.\n"
-            f"لديك {DEMO_QUESTION_LIMIT} رسائل في هذه الجلسة التجريبية؛ أخبرني ما هو مشروعك وما الذي تريده في البوت الخاص بك؟"
+            f"أنا مساعدك الذكي المتخصص في تصميم البوتات الذكية للأعمال.{limit_text}\n"
+            f"أخبرني ما هو مشروعك وما الذي تريده في البوت الخاص بك؟"
         )
         bot.send_message(chat_id, welcome, reply_markup=markup)
         return "OK", 200
@@ -1981,7 +2049,7 @@ def telegram_webhook(bot_token):
         if demo_url:
             bot.send_message(
                 chat_id,
-                f"👁️ هذه واجهة إشعاراتك الخاصة في هذه التجربة (تُظهر طلباتك أنت فقط):\n{demo_url}",
+                f"👁️ هذه اللوحة التجريبية للقراءة فقط لترى كيف تصل الإشعارات والطلبات:\n{demo_url}",
                 reply_markup=markup
             )
         else:
