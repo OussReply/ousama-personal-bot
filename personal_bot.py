@@ -1091,3 +1091,1058 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function copyText(elementId) {
         const el = document.getElementById(elementId);
+        if (!el) return;
+        navigator.clipboard.writeText(el.textContent.trim());
+        alert('تم النسخ بنجاح!');
+    }
+
+    function showWebSnippet(siteId) {
+        const baseUrl = window.location.origin;
+        const endScript = "</" + "script>";
+        const code = `<div id="omnibot-box" style="position:fixed;bottom:20px;left:20px;z-index:9999;background:#0f172a;color:#fff;padding:14px;border-radius:12px;border:1px solid #38bdf8;width:290px;font-family:sans-serif;">
+  <div style="font-weight:bold;margin-bottom:8px;">💬 المساعد الذكي</div>
+  <div id="omnibot-log" style="max-height:170px;overflow-y:auto;font-size:13px;margin-bottom:8px;"></div>
+  <input id="omnibot-inp" placeholder="اكتب رسالتك..." style="width:100%;padding:7px;border-radius:6px;border:none;margin-bottom:6px;box-sizing:border-box;">
+  <button onclick="sendOmniMsg()" style="width:100%;padding:7px;background:#0284c7;color:#fff;border:none;border-radius:6px;cursor:pointer;">إرسال</button>
+</div>
+<script>
+const sid = "web_" + Math.random().toString(36).slice(2, 9);
+async function sendOmniMsg() {
+  const inp = document.getElementById("omnibot-inp");
+  const log = document.getElementById("omnibot-log");
+  const txt = inp.value.trim();
+  if (!txt) return;
+  log.innerHTML += "<div><b>أنت:</b> " + txt + "</div>";
+  inp.value = "";
+  const r = await fetch("${baseUrl}/api/webchat/${siteId}", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({message: txt, session_id: sid})
+  });
+  const d = await r.json();
+  log.innerHTML += "<div style='color:#38bdf8;'><b>البوت:</b> " + (d.reply || "") + "</div>";
+  log.scrollTop = log.scrollHeight;
+}
+${endScript}`;
+        document.getElementById('webCodeBox').textContent = code;
+        document.getElementById('webModal').style.display = 'block';
+    }
+
+    function closeWebModal() {
+        document.getElementById('webModal').style.display = 'none';
+    }
+
+    function copyWebCode() {
+        const text = document.getElementById('webCodeBox').textContent;
+        navigator.clipboard.writeText(text);
+        alert('تم نسخ كود الموقع بنجاح!');
+    }
+
+    async function pollNotifications() {
+        try {
+            const res = await fetch('/admin/notifications-status');
+            if (!res.ok) return;
+            const data = await res.json();
+            const unread = Number(data.unread_count || 0);
+            document.getElementById('statUnread').textContent = unread;
+            const banner = document.getElementById('liveBanner');
+            const title = document.getElementById('liveBannerTitle');
+            const sub = document.getElementById('liveBannerSub');
+            if (unread > 0) {
+                banner.classList.add('has-unread');
+                title.textContent = `🔔 تنبيه: لديك ${unread} طلب/إشعار جديد مكتمل البيانات!`;
+                if (data.latest) {
+                    sub.textContent = `آخر طلب من (${data.latest.client_name}): ${data.latest.message_text.slice(0, 90)}...`;
+                }
+                if (unread > lastKnownUnread) {
+                    lastKnownUnread = unread;
+                }
+            } else {
+                banner.classList.remove('has-unread');
+                title.textContent = '✅ مركز الطلبات نشط — لن تصلك إلا البيانات الكاملة الجاهزة لصناعة البوت.';
+                sub.textContent = 'يتم فحص الطلبات الجديدة تلقائياً كل 10 ثوانٍ.';
+                lastKnownUnread = 0;
+            }
+        } catch (e) {}
+    }
+
+    setInterval(pollNotifications, 10000);
+</script>
+</body>
+</html>"""
+CLIENT_PORTAL_HTML = """<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إشعارات الزبائن — {{ client_name }}</title>
+    <style>
+        :root { --bg: #0b1120; --card: #1e293b; --border: #334155; --primary: #0284c7; --accent: #38bdf8; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: #f8fafc; margin: 0; padding: 18px; }
+        .container { max-width: 1100px; margin: auto; }
+        h1, h2 { color: var(--accent); margin-top: 0; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; background: var(--card); padding: 16px 20px; border-radius: 12px; border: 1px solid var(--border); }
+        .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .live-banner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: linear-gradient(90deg, #172554, #1e293b); border: 1px solid #38bdf8; padding: 14px 18px; border-radius: 12px; margin-bottom: 18px; }
+        .live-banner.has-unread { background: linear-gradient(90deg, #7c2d12, #1e293b); border-color: #fb923c; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 20px; }
+        .stat-box { background: var(--card); padding: 16px; border-radius: 12px; border-right: 4px solid var(--accent); border-top: 1px solid var(--border); }
+        .stat-num { font-size: 24px; font-weight: bold; color: #fff; }
+        .stat-label { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+        .card { background: var(--card); padding: 20px; border-radius: 12px; margin-bottom: 22px; border: 1px solid var(--border); }
+        .btn { background: var(--primary); color: white; border: none; padding: 9px 14px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+        .btn-success { background: #16a34a; }
+        .btn-warn { background: #d97706; }
+        .btn-danger { background: #dc2626; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 11px; text-align: right; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 13px; }
+        th { color: #94a3b8; background: #0f172a; }
+        tr.unread-row { background: rgba(251, 146, 60, 0.14); }
+        .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        .active { background: #14532d; color: #4ade80; }
+        .inactive { background: #7f1d1d; color: #f87171; }
+        .unread-badge { background: #ea580c; color: #fff; }
+        .read-badge { background: #334155; color: #cbd5e1; }
+        .plat-badge { background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        .alert { background: #065f46; color: #a7f3d0; padding: 12px 15px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #10b981; }
+        .lead-text { white-space: pre-line; line-height: 1.6; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="top-bar">
+        <div>
+            <h1 style="margin:0; font-size: 20px;">📬 إشعارات الزبائن — {{ client_name }}</h1>
+            <span style="font-size: 12px; color: #94a3b8;">واجهة متابعة مخصصة لبوتك فقط — القناة: {{ (platform or 'telegram')|upper }}</span>
+        </div>
+        {% if show_full_controls is not defined or show_full_controls %}
+        <div class="toolbar">
+            <a href="/client/export-leads" class="btn btn-success">📥 تصدير CSV</a>
+            <a href="/client/logout" class="btn btn-danger">🚪 خروج</a>
+        </div>
+        {% endif %}
+    </div>
+
+    <div id="clientLiveBanner" class="live-banner {% if unread_count > 0 %}has-unread{% endif %}">
+        <div>
+            <strong id="clientBannerTitle">
+                {% if unread_count > 0 %}
+                    🔔 لديك {{ unread_count }} إشعار/طلب جديد من زبائنك!
+                {% else %}
+                    ✅ لا توجد إشعارات جديدة غير مقروءة حالياً.
+                {% endif %}
+            </strong>
+            <div id="clientBannerSub" style="font-size:12px; color:#cbd5e1; margin-top:3px;">
+                {% if show_full_controls is not defined or show_full_controls %}
+                    يتم التحديث تلقائياً كل 10 ثوانٍ.
+                {% else %}
+                    معاينة معزولة خاصة بحسابك التجريبي فقط.
+                {% endif %}
+            </div>
+        </div>
+        {% if show_full_controls is not defined or show_full_controls %}
+        <div class="toolbar">
+            <form method="POST" action="/client/mark-read" style="margin:0;">
+                <button type="submit" class="btn btn-warn">✔️ تحديد الكل كمقروء</button>
+            </form>
+            <button type="button" class="btn" onclick="location.reload()">🔄 تحديث الآن</button>
+        </div>
+        {% else %}
+        <div class="toolbar">
+            <button type="button" class="btn" onclick="location.reload()">🔄 تحديث الآن</button>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if msg %}
+    <div class="alert">{{ msg }}</div>
+    {% endif %}
+
+    <div class="stats-grid">
+        <div class="stat-box">
+            <div class="stat-num" id="clientStatUnread">{{ unread_count }}</div>
+            <div class="stat-label">🔔 إشعارات جديدة</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-num">{{ leads|length }}</div>
+            <div class="stat-label">📋 إجمالي الإشعارات المسجلة</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-num">
+                {% if is_active %}
+                <span class="badge active">🟢 البوت نشط</span>
+                {% else %}
+                <span class="badge inactive">🔴 البوت متوقف</span>
+                {% endif %}
+            </div>
+            <div class="stat-label">حالة تشغيل البوت</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📋 سجل إشعارات وطلبات الزبائن</h2>
+        <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>الحالة</th>
+                    <th>القناة</th>
+                    <th>المرسل</th>
+                    <th>تفاصيل الإشعار / الطلب</th>
+                    <th>التوقيت</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for l in leads %}
+                <tr class="{% if not l.is_read %}unread-row{% endif %}">
+                    <td>
+                        {% if not l.is_read %}
+                        <span class="badge unread-badge">🆕 جديد</span>
+                        {% else %}
+                        <span class="badge read-badge">مقروء</span>
+                        {% endif %}
+                    </td>
+                    <td><span class="plat-badge">{{ (l.platform or 'telegram')|upper }}</span></td>
+                    <td style="font-size:12px;">{{ l.sender_label or 'زبون' }}<br><code>{{ l.sender_chat_id }}</code></td>
+                    <td class="lead-text">{{ l.message_text }}</td>
+                    <td style="font-size:12px; color:#94a3b8;">{{ l.created_at }}</td>
+                </tr>
+                {% endfor %}
+                {% if leads|length == 0 %}
+                <tr><td colspan="5" style="text-align:center; color:#94a3b8;">لا توجد إشعارات مسجلة لبوتك حتى الآن.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+
+{% if show_full_controls is not defined or show_full_controls %}
+<script>
+    async function pollClientNotifications() {
+        try {
+            const res = await fetch('/client/notifications-status');
+            if (!res.ok) return;
+            const data = await res.json();
+            const unread = Number(data.unread_count || 0);
+            document.getElementById('clientStatUnread').textContent = unread;
+            const banner = document.getElementById('clientLiveBanner');
+            const title = document.getElementById('clientBannerTitle');
+            const sub = document.getElementById('clientBannerSub');
+            if (unread > 0) {
+                banner.classList.add('has-unread');
+                title.textContent = `🔔 لديك ${unread} إشعار/طلب جديد من زبائنك!`;
+                if (data.latest) {
+                    sub.textContent = `آخر إشعار: ${data.latest.message_text.slice(0, 95)}...`;
+                }
+            } else {
+                banner.classList.remove('has-unread');
+                title.textContent = '✅ لا توجد إشعارات جديدة غير مقروءة حالياً.';
+                sub.textContent = 'يتم التحديث تلقائياً كل 10 ثوانٍ.';
+            }
+        } catch (e) {}
+    }
+    setInterval(pollClientNotifications, 10000);
+</script>
+{% endif %}
+</body>
+</html>"""
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return "OmniBot SaaS Platform is Online!", 200
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if not ADMIN_SECRET:
+        return "يرجى ضبط متغير البيئة ADMIN_SECRET أولاً في Railway.", 500
+
+    client_ip = get_client_ip()
+    if is_admin_ip_blocked(client_ip):
+        return "تم حظر المحاولات مؤقتاً بسبب تكرار رمز الدخول الخاطئ. يرجى المحاولة بعد 5 دقائق.", 429
+
+    error = ""
+    if request.method == "POST":
+        entered_secret = request.form.get("secret", "").strip()
+        if safe_compare_secret(entered_secret, ADMIN_SECRET):
+            clear_failed_admin_attempts(client_ip)
+            clear_client_session_keys()
+            session["session_owner"] = "admin"
+            session["admin_auth"] = True
+            return redirect(url_for("admin_dashboard"))
+        record_failed_admin_attempt(client_ip)
+        error = "رمز الدخول غير صحيح."
+
+    return f"""
+    <!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>دخول الإدارة</title>
+    <style>body{{font-family:system-ui;background:#0b1120;color:#f8fafc;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}}
+    .box{{background:#1e293b;padding:28px;border-radius:12px;width:340px;border:1px solid #334155}}
+    input{{width:100%;padding:10px;margin:12px 0;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;box-sizing:border-box}}
+    button{{width:100%;padding:10px;border:none;border-radius:8px;background:#0284c7;color:#fff;font-weight:bold;cursor:pointer}}
+    .err{{color:#f87171;font-size:13px;margin-bottom:8px}}</style></head>
+    <body><form method="POST" class="box"><h2>🔐 دخول لوحة الإدارة</h2>
+    {"<div class='err'>" + error + "</div>" if error else ""}
+    <input type="password" name="secret" placeholder="أدخل ADMIN_SECRET" required>
+    <button type="submit">دخول</button></form></body></html>
+    """
+
+
+@app.route("/admin/logout", methods=["GET"])
+def admin_logout():
+    clear_admin_session_keys()
+    return redirect(url_for("admin_login"))
+
+
+@app.route("/admin/notifications-status", methods=["GET"])
+def admin_notifications_status():
+    if not is_admin_authorized():
+        return jsonify({"error": "unauthorized"}), 403
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT COUNT(*) AS cnt FROM leads WHERE is_read = FALSE")
+        row_u = cur.fetchone()
+        unread_count = row_u["cnt"] if row_u else 0
+
+        cur.execute("SELECT client_name, platform, message_text, created_at FROM leads ORDER BY id DESC LIMIT 1")
+        latest = cur.fetchone()
+        cur.close()
+        return jsonify({
+            "unread_count": unread_count,
+            "latest": dict(latest) if latest else None
+        })
+    except Exception as e:
+        logger.error(f"Error fetching notification status: {e}")
+        return jsonify({"unread_count": 0, "latest": None})
+    finally:
+        release_db_connection(conn)
+
+
+@app.route("/admin/mark-read", methods=["POST"])
+def admin_mark_read():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE leads SET is_read = TRUE WHERE is_read = FALSE")
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Error marking leads read: {e}")
+    finally:
+        release_db_connection(conn)
+    return redirect(url_for("admin_dashboard", msg="تم تحديد جميع الطلبات كمقروءة."))
+
+
+@app.route("/admin/test-alert", methods=["POST"])
+def admin_test_alert():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+
+    sample_report = (
+        "📋 طلب صناعة بوت كامل (تجريبي):\n"
+        "• الاسم / المشروع: اختبار النظام\n"
+        "• وسيلة التواصل: لوحة الأدمن\n"
+        "• نوع النشاط: تجربة الإشعارات\n"
+        "• المنصة المطلوبة: Telegram\n"
+        "• المهام والتعليمات المطلوبة: التأكد من وصول التقرير النهائي فقط."
+    )
+    save_lead(
+        "system_test",
+        "اختبار المنصة",
+        "admin_test",
+        ADMIN_CHAT_ID or "admin",
+        "لوحة التحكم",
+        sample_report
+    )
+
+    sent_tg = False
+    if ALERT_BOT_TOKEN and ADMIN_CHAT_ID:
+        sent_tg = send_to_chat_id(ALERT_BOT_TOKEN, ADMIN_CHAT_ID, sample_report)
+
+    if sent_tg:
+        msg = "✅ تم إرسال التقرير التجريبي إلى صفحة الأدمن وإلى تيليجرام بنجاح!"
+    else:
+        msg = "⚠️ تم تسجيل الإشعار في صفحة الأدمن؛ تحقق من ضبط ALERT_BOT_TOKEN وADMIN_CHAT_ID لإرسال تيليجرام."
+
+    return redirect(url_for("admin_dashboard", msg=msg))
+
+
+@app.route("/admin/export-leads", methods=["GET"])
+def admin_export_leads():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+
+    conn = None
+    rows = []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, client_name, platform, sender_chat_id, sender_label, message_text, is_read, created_at FROM leads ORDER BY id DESC")
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        logger.error(f"Export error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Client", "Platform", "Sender ID", "Sender Label", "Message", "Is Read", "Created At"])
+    for r in rows:
+        writer.writerow([
+            r["id"], r["client_name"], r["platform"], r["sender_chat_id"],
+            r["sender_label"], r["message_text"], r["is_read"], r["created_at"]
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=omnibot_extracted_leads.csv"}
+    )
+
+
+@app.route("/admin/issue-client-portal", methods=["POST"])
+def admin_issue_client_portal():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    bot_token = request.form.get("token", "").strip()
+    if not bot_token or not get_client(bot_token):
+        return redirect(url_for("admin_dashboard", msg="⚠️ تعذر العثور على البوت لتوليد رابط العميل."))
+
+    access_tok = issue_client_portal_token(bot_token)
+    if not access_tok:
+        return redirect(url_for("admin_dashboard", msg="❌ فشل إنشاء رمز دخول للعميل."))
+
+    host_url = (PUBLIC_BASE_URL or request.host_url).rstrip("/").replace("http://", "https://")
+    portal_url = f"{host_url}/client/login/{access_tok}"
+    return redirect(url_for("admin_dashboard", msg="✅ تم إصدار رابط دخول خاص ومستقل للعميل.", portal_url=portal_url))
+
+
+@app.route("/admin/clear-leads", methods=["POST"])
+def admin_clear_leads():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+    if not token:
+        return redirect(url_for("admin_dashboard", msg="⚠️ يرجى تحديد البوت لمسح إشعاراته."))
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM leads WHERE bot_token = %s", (token,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Clear leads error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return redirect(url_for("admin_dashboard", msg="🧹 تم مسح إشعارات هذا البوت بنجاح."))
+
+
+@app.route("/admin", methods=["GET", "POST"])
+def admin_dashboard():
+    if not is_admin_authorized():
+        return redirect(url_for("admin_login"))
+
+    msg = request.args.get("msg", "")
+    client_portal_url = request.args.get("portal_url", "")
+
+    if request.method == "POST":
+        platform = request.form.get("platform", "telegram").strip()
+        token = request.form.get("token", "").strip()
+        name = request.form.get("name", "عميل جديد").strip()
+        prompt = request.form.get("prompt", "أنت مساعد ذكي.").strip()
+        welcome_message = request.form.get("welcome_message", "").strip()
+        notify_chat_id = request.form.get("notify_chat_id", "").strip()
+        auto_replies_raw = request.form.get("auto_replies", "{}").strip() or "{}"
+        quick_buttons_raw = request.form.get("quick_buttons", "[]").strip() or "[]"
+        extra_token = request.form.get("extra_token", "").strip()
+        api_key = request.form.get("api_key", "").strip() or DEFAULT_ANTHROPIC_KEY
+
+        try:
+            parsed_auto = json.loads(auto_replies_raw)
+            if not isinstance(parsed_auto, dict):
+                raise ValueError("auto_replies must be dict")
+            auto_replies_json = json.dumps(parsed_auto, ensure_ascii=False)
+        except Exception:
+            auto_replies_json = "{}"
+            msg = "⚠️ تنبيه: تم ضبط الردود التلقائية على {} بسبب صيغة JSON غير صالحة."
+
+        try:
+            parsed_btns = json.loads(quick_buttons_raw)
+            if not isinstance(parsed_btns, list):
+                raise ValueError("quick_buttons must be list")
+            quick_buttons_json = json.dumps(parsed_btns, ensure_ascii=False)
+        except Exception:
+            quick_buttons_json = "[]"
+
+        if token:
+            conn = None
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO clients (
+                        bot_token, client_name, system_prompt, welcome_message,
+                        notify_chat_id, auto_replies, quick_buttons, anthropic_key,
+                        platform, extra_token, is_active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                    ON CONFLICT (bot_token) DO UPDATE SET
+                        client_name = EXCLUDED.client_name,
+                        system_prompt = EXCLUDED.system_prompt,
+                        welcome_message = EXCLUDED.welcome_message,
+                        notify_chat_id = EXCLUDED.notify_chat_id,
+                        auto_replies = EXCLUDED.auto_replies,
+                        quick_buttons = EXCLUDED.quick_buttons,
+                        anthropic_key = EXCLUDED.anthropic_key,
+                        platform = EXCLUDED.platform,
+                        extra_token = EXCLUDED.extra_token,
+                        is_active = TRUE
+                """, (
+                    token, name, prompt, welcome_message, notify_chat_id,
+                    auto_replies_json, quick_buttons_json, api_key, platform, extra_token
+                ))
+                conn.commit()
+                cur.close()
+
+                host_url = (PUBLIC_BASE_URL or request.host_url).rstrip("/").replace("http://", "https://")
+                if platform == "telegram":
+                    tg_res = set_tg_webhook(token, host_url)
+                    if tg_res.get("ok"):
+                        msg = f"✅ تم حفظ وتفعيل بوت تيليجرام ({name}) وضبط Webhook بنجاح!"
+                    else:
+                        msg = f"⚠️ تم الحفظ، ملاحظة تيليجرام: {tg_res.get('description')}"
+                elif platform == "whatsapp":
+                    msg = f"✅ تم تفعيل بوت واتساب ({name}). رابط Webhook: {host_url}/webhook/whatsapp"
+                elif platform == "instagram":
+                    msg = f"✅ تم تفعيل بوت إنستجرام ({name}). رابط Webhook: {host_url}/webhook/instagram"
+                elif platform == "web":
+                    msg = f"✅ تم تفعيل بوت الموقع ({name}). رابط API: {host_url}/api/webchat/{token}"
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                logger.error(f"Save client error: {e}")
+                msg = "❌ حدث خطأ أثناء الحفظ. يرجى التحقق من المدخلات."
+            finally:
+                release_db_connection(conn)
+
+    conn = None
+    clients = []
+    leads = []
+    unread_count = 0
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM clients ORDER BY created_at DESC")
+        clients = cur.fetchall()
+
+        cur.execute("SELECT * FROM leads ORDER BY id DESC LIMIT 60")
+        leads = cur.fetchall()
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM leads WHERE is_read = FALSE")
+        r_unread = cur.fetchone()
+        unread_count = r_unread["cnt"] if r_unread else 0
+        cur.close()
+    except Exception as e:
+        logger.error(f"Dashboard load error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    active_count = sum(1 for c in clients if c.get("is_active"))
+    portal_tokens_map = get_active_client_portal_tokens_map()
+
+    return render_template_string(
+        DASHBOARD_HTML,
+        clients=clients,
+        leads=leads,
+        active_count=active_count,
+        unread_count=unread_count,
+        demo_limit=DEMO_QUESTION_LIMIT,
+        portal_tokens_map=portal_tokens_map,
+        client_portal_url=client_portal_url,
+        msg=msg
+    )
+
+
+@app.route("/admin/toggle", methods=["POST"])
+def admin_toggle():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+    state = request.form.get("active", "true").lower() == "true"
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE clients SET is_active = %s WHERE bot_token = %s", (state, token))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Toggle error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    action_word = "تفعيل" if state else "إيقاف"
+    return redirect(url_for("admin_dashboard", msg=f"تم {action_word} البوت بنجاح."))
+
+
+@app.route("/admin/rehook", methods=["POST"])
+def admin_rehook():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+    host_url = (PUBLIC_BASE_URL or request.host_url).rstrip("/").replace("http://", "https://")
+    tg_res = set_tg_webhook(token, host_url)
+    if tg_res.get("ok"):
+        return redirect(url_for("admin_dashboard", msg="✅ تم إعادة ربط Telegram Webhook بنجاح."))
+    return redirect(url_for("admin_dashboard", msg=f"⚠️ فشل إعادة الربط: {tg_res.get('description')}"))
+
+
+@app.route("/admin/delete", methods=["POST"])
+def admin_delete():
+    if not is_admin_authorized():
+        return "غير مصرح", 403
+    token = request.form.get("token", "").strip()
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM chat_history WHERE bot_token = %s", (token,))
+        cur.execute("DELETE FROM leads WHERE bot_token = %s", (token,))
+        cur.execute("DELETE FROM client_portal_tokens WHERE bot_token = %s", (token,))
+        cur.execute("DELETE FROM clients WHERE bot_token = %s", (token,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Delete error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return redirect(url_for("admin_dashboard", msg="🗑️ تم حذف البوت وسجله بنجاح."))
+
+
+@app.route("/client/demo/<bot_token>/<sender_chat_id>/<sig>", methods=["GET"])
+def client_demo_user_dashboard(bot_token, sender_chat_id, sig):
+    if not verify_demo_user_token(bot_token, sender_chat_id, sig):
+        return "رابط المعاينة غير صالح أو منتهي.", 403
+
+    client_info = get_client(bot_token)
+    if not client_info or not client_info.get("is_active"):
+        return "البوت التجريبي غير متاح حالياً.", 404
+
+    conn = None
+    leads = []
+    unread_count = 0
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT * FROM leads WHERE bot_token = %s AND sender_chat_id = %s ORDER BY id DESC LIMIT 50",
+            (str(bot_token).strip(), str(sender_chat_id).strip())
+        )
+        leads = cur.fetchall()
+        unread_count = sum(1 for r in leads if not r.get("is_read"))
+        cur.close()
+    except Exception as e:
+        logger.error(f"Demo user portal error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return render_template_string(
+        CLIENT_PORTAL_HTML,
+        client_name=f"{client_info['client_name']} (معاينتك الخاصة)",
+        platform=client_info.get("platform") or "telegram",
+        is_active=bool(client_info.get("is_active")),
+        leads=leads,
+        unread_count=unread_count,
+        show_full_controls=False,
+        msg="هذه الواجهة تعرض إشعاراتك أنت فقط في هذه التجربة دون إظهار بيانات الآخرين."
+    )
+
+
+@app.route("/client/login/<access_token>", methods=["GET"])
+def client_portal_login(access_token):
+    info = validate_portal_access_token(access_token)
+    if not info:
+        return "رابط الدخول غير صالح أو تم إبطاله.", 403
+
+    clear_admin_session_keys()
+    session["session_owner"] = "client"
+    session["client_auth"] = True
+    session["client_bot_token"] = info["bot_token"]
+    return redirect(url_for("client_portal_dashboard"))
+
+
+@app.route("/client/logout", methods=["GET"])
+def client_portal_logout():
+    clear_client_session_keys()
+    return "تم تسجيل الخروج من واجهة الإشعارات بنجاح.", 200
+
+
+@app.route("/client/dashboard", methods=["GET"])
+def client_portal_dashboard():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return "غير مصرح بالدخول. يرجى استخدام رابط الدخول الخاص بحسابك.", 403
+
+    client_info = get_client(bot_token)
+    if not client_info:
+        return "حساب البوت غير موجود.", 404
+
+    msg = request.args.get("msg", "")
+    conn = None
+    leads = []
+    unread_count = 0
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT * FROM leads WHERE bot_token = %s ORDER BY id DESC LIMIT 100",
+            (bot_token,)
+        )
+        leads = cur.fetchall()
+
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM leads WHERE bot_token = %s AND is_read = FALSE",
+            (bot_token,)
+        )
+        r_unread = cur.fetchone()
+        unread_count = r_unread["cnt"] if r_unread else 0
+        cur.close()
+    except Exception as e:
+        logger.error(f"Client portal load error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return render_template_string(
+        CLIENT_PORTAL_HTML,
+        client_name=client_info["client_name"],
+        platform=client_info.get("platform") or "telegram",
+        is_active=bool(client_info.get("is_active")),
+        leads=leads,
+        unread_count=unread_count,
+        show_full_controls=True,
+        msg=msg
+    )
+
+
+@app.route("/client/notifications-status", methods=["GET"])
+def client_notifications_status():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return jsonify({"error": "unauthorized"}), 403
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM leads WHERE bot_token = %s AND is_read = FALSE",
+            (bot_token,)
+        )
+        row_u = cur.fetchone()
+        unread_count = row_u["cnt"] if row_u else 0
+
+        cur.execute(
+            "SELECT platform, message_text, created_at FROM leads WHERE bot_token = %s ORDER BY id DESC LIMIT 1",
+            (bot_token,)
+        )
+        latest = cur.fetchone()
+        cur.close()
+        return jsonify({
+            "unread_count": unread_count,
+            "latest": dict(latest) if latest else None
+        })
+    except Exception as e:
+        logger.error(f"Error fetching client notification status: {e}")
+        return jsonify({"unread_count": 0, "latest": None})
+    finally:
+        release_db_connection(conn)
+
+
+@app.route("/client/mark-read", methods=["POST"])
+def client_mark_read():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return "غير مصرح", 403
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE leads SET is_read = TRUE WHERE bot_token = %s AND is_read = FALSE",
+            (bot_token,)
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Error marking client leads read: {e}")
+    finally:
+        release_db_connection(conn)
+
+    return redirect(url_for("client_portal_dashboard", msg="تم تحديد جميع إشعارات بوتك كمقروءة."))
+
+
+@app.route("/client/export-leads", methods=["GET"])
+def client_export_leads():
+    bot_token = get_authorized_client_bot_token()
+    if not bot_token:
+        return "غير مصرح", 403
+
+    conn = None
+    rows = []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT id, platform, sender_chat_id, sender_label, message_text, is_read, created_at FROM leads WHERE bot_token = %s ORDER BY id DESC",
+            (bot_token,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        logger.error(f"Client export error: {e}")
+    finally:
+        release_db_connection(conn)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Platform", "Sender ID", "Sender Label", "Message", "Is Read", "Created At"])
+    for r in rows:
+        writer.writerow([
+            r["id"], r["platform"], r["sender_chat_id"],
+            r["sender_label"], r["message_text"], r["is_read"], r["created_at"]
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=client_bot_notifications.csv"}
+    )
+
+
+@app.route("/webhook/<bot_token>", methods=["POST"])
+def telegram_webhook(bot_token):
+    client_data = get_client(bot_token)
+    if not client_data or not client_data.get("is_active"):
+        return "Bot inactive", 200
+
+    update_json = request.get_json(silent=True)
+    if not update_json:
+        return "Invalid payload", 400
+
+    update = telebot.types.Update.de_json(update_json)
+    if not update.message or not update.message.text:
+        return "OK", 200
+
+    chat_id = str(update.message.chat.id)
+    user_text = update.message.text.strip()
+    bot = telebot.TeleBot(bot_token)
+    markup = build_telegram_keyboard(client_data)
+    host_url = (PUBLIC_BASE_URL or request.host_url).rstrip("/").replace("http://", "https://")
+
+    sender_name = (update.message.from_user.first_name if update.message.from_user else "") or "مستخدم"
+    sender_user = f"@{update.message.from_user.username}" if (update.message.from_user and update.message.from_user.username) else "بدون يوزر"
+    sender_label = f"{sender_name} ({sender_user})"
+
+    if user_text == "/start":
+        welcome = client_data.get("welcome_message") or (
+            f"أهلاً بك في {client_data['client_name']}! 👋\n"
+            f"أنا مساعدك الذكي المتخصص في تصميم البوتات الذكية للأعمال.\n"
+            f"لديك {DEMO_QUESTION_LIMIT} رسائل في هذه الجلسة التجريبية؛ أخبرني ما هو مشروعك وما الذي تريده في البوت الخاص بك؟"
+        )
+        bot.send_message(chat_id, welcome, reply_markup=markup)
+        return "OK", 200
+
+    if user_text == "👁️ لوحتي التجريبية":
+        demo_url = build_demo_user_portal_url(host_url, bot_token, chat_id)
+        if demo_url:
+            bot.send_message(
+                chat_id,
+                f"👁️ هذه واجهة إشعاراتك الخاصة في هذه التجربة (تُظهر طلباتك أنت فقط):\n{demo_url}",
+                reply_markup=markup
+            )
+        else:
+            bot.send_message(
+                chat_id,
+                "⚠️ تعذر توليد رابط المعاينة حالياً؛ تأكد من ضبط PUBLIC_BASE_URL في متغيرات البيئة.",
+                reply_markup=markup
+            )
+        return "OK", 200
+
+    if user_text == "🔄 محادثة جديدة":
+        clear_user_context_keep_quota(bot_token, chat_id)
+        bot.send_message(chat_id, "تم تجديد سياق المحادثة. تفضل بطرح تفاصيل مشروعك:", reply_markup=markup)
+        return "OK", 200
+
+    if user_text == "📞 تواصل مع موظف":
+        handle_incoming_notification(
+            client_data,
+            "telegram",
+            chat_id,
+            sender_label,
+            "📞 طلب تواصل مباشر: العميل ضغط على زر (تواصل مع موظف).",
+            is_urgent=True
+        )
+        bot.send_message(
+            chat_id,
+            "تم إرسال طلب تواصلك بنجاح. سيتواصل معك المختص في أقرب وقت.",
+            reply_markup=markup
+        )
+        return "OK", 200
+
+    bot.send_chat_action(chat_id, "typing")
+    reply_text = generate_ai_reply(
+        client_data, chat_id, user_text,
+        platform="telegram", sender_label=sender_label, base_url=host_url
+    )
+    bot.send_message(chat_id, reply_text, reply_markup=markup)
+    return "OK", 200
+
+
+@app.route("/webhook/whatsapp", methods=["GET", "POST"])
+def whatsapp_webhook():
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == META_VERIFY_TOKEN:
+            return challenge, 200
+        return "Forbidden", 403
+
+    raw_body = request.get_data()
+    if not verify_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256", "")):
+        return "Invalid signature", 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        for entry in data.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                phone_number_id = (value.get("metadata") or {}).get("phone_number_id")
+                for message in value.get("messages", []):
+                    if message.get("type") == "text" and phone_number_id:
+                        sender_phone = str(message.get("from", ""))
+                        user_text = (message.get("text") or {}).get("body", "").strip()
+                        if not user_text:
+                            continue
+
+                        client_data = get_client(phone_number_id)
+                        if client_data and client_data.get("is_active") and client_data.get("extra_token"):
+                            reply_text = generate_ai_reply(
+                                client_data, sender_phone, user_text,
+                                platform="whatsapp", sender_label=f"WhatsApp ({sender_phone})"
+                            )
+                            wa_url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+                            headers = {
+                                "Authorization": f"Bearer {client_data['extra_token']}",
+                                "Content-Type": "application/json"
+                            }
+                            payload = {
+                                "messaging_product": "whatsapp",
+                                "to": sender_phone,
+                                "text": {"body": reply_text}
+                            }
+                            requests.post(wa_url, headers=headers, json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"WhatsApp webhook error: {e}")
+
+    return "OK", 200
+
+
+@app.route("/webhook/instagram", methods=["GET", "POST"])
+def instagram_webhook():
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == META_VERIFY_TOKEN:
+            return challenge, 200
+        return "Forbidden", 403
+
+    raw_body = request.get_data()
+    if not verify_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256", "")):
+        return "Invalid signature", 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        for entry in data.get("entry", []):
+            ig_id = str(entry.get("id", ""))
+            for event in entry.get("messaging", []):
+                sender_id = str((event.get("sender") or {}).get("id", ""))
+                message = event.get("message") or {}
+                if message.get("is_echo"):
+                    continue
+                user_text = (message.get("text") or "").strip()
+                if sender_id and user_text and ig_id:
+                    client_data = get_client(ig_id)
+                    if client_data and client_data.get("is_active") and client_data.get("extra_token"):
+                        reply_text = generate_ai_reply(
+                            client_data, sender_id, user_text,
+                            platform="instagram", sender_label=f"Instagram ({sender_id})"
+                        )
+                        ig_url = f"https://graph.facebook.com/v18.0/{ig_id}/messages"
+                        headers = {
+                            "Authorization": f"Bearer {client_data['extra_token']}",
+                            "Content-Type": "application/json"
+                        }
+                        payload = {
+                            "recipient": {"id": sender_id},
+                            "message": {"text": reply_text}
+                        }
+                        requests.post(ig_url, headers=headers, json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"Instagram webhook error: {e}")
+
+    return "OK", 200
+
+
+@app.route("/api/webchat/<site_id>", methods=["POST"])
+def webchat_api(site_id):
+    client_data = get_client(site_id)
+    if not client_data or not client_data.get("is_active"):
+        return jsonify({"error": "Bot inactive or not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    user_text = str(payload.get("message", "")).strip()
+    session_id = str(payload.get("session_id", "")).strip() or (get_client_ip() or "web_visitor")
+
+    rate_key = f"{site_id}:{session_id}:{get_client_ip()}"
+    if is_webchat_rate_limited(rate_key):
+        return jsonify({"error": "Too many requests. Please slow down."}), 429
+
+    if not user_text:
+        return jsonify({"error": "Empty message"}), 400
+
+    reply_text = generate_ai_reply(
+        client_data, session_id, user_text,
+        platform="web", sender_label=f"زائر الموقع ({session_id})"
+    )
+    return jsonify({"reply": reply_text}), 200
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
